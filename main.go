@@ -173,7 +173,7 @@ func plotSpectrogram(pcm []float64, width, height, fftSize, hopSize int) *gg.Con
 			// Calculate the magnitude of the spectrum at the current frequency bin.
 			mag := cmplx.Abs(complex128(spectrum[y]))
 			// Convert the magnitude to dBFS.
-			dBFS := (20 * math.Log10(mag/math.Sqrt(windowEnergy))) - 10
+			dBFS := 20 * math.Log10(mag/math.Sqrt(windowEnergy))
 			fmt.Println(windowEnergy)
 			//			if dBFS > -8 {
 			//fmt.Println(dBFS)
