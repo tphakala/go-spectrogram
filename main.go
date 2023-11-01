@@ -6,13 +6,14 @@ import (
 	"image/color"
 	"log"
 	"math"
+	"math/cmplx"
 	"os"
 
 	"github.com/fogleman/gg"
 	"github.com/go-audio/audio"
 	"github.com/go-audio/wav"
+	"github.com/mjibson/go-dsp/fft"
 	"github.com/mjibson/go-dsp/window"
-	"gonum.org/v1/gonum/dsp/fourier"
 )
 
 const SampleRate = 48000
@@ -23,80 +24,55 @@ type ColorThreshold struct {
 }
 
 var baseColorPalette = []ColorThreshold{
-	{-77.5, color.RGBA{0, 0, 45, 255}},
-	{-75, color.RGBA{0, 0, 50, 255}},
-	{-72.5, color.RGBA{0, 0, 55, 255}},
-	{-70, color.RGBA{0, 0, 60, 255}},
-	{-67.5, color.RGBA{0, 0, 65, 255}},
-	{-65, color.RGBA{0, 0, 70, 255}},
-	{-62.5, color.RGBA{0, 0, 75, 255}},
-	{-60, color.RGBA{0, 0, 80, 255}},
-	{-57.5, color.RGBA{0, 0, 85, 255}},
-	{-55, color.RGBA{0, 0, 90, 255}},
-	{-52.5, color.RGBA{0, 0, 95, 255}},
-	{-50, color.RGBA{0, 0, 100, 255}},
-	{-48.75, color.RGBA{0, 0, 105, 255}},
-	{-47.5, color.RGBA{0, 0, 110, 255}},
-	{-46.25, color.RGBA{0, 0, 115, 255}},
-	{-45, color.RGBA{0, 0, 120, 255}},
-	{-43.75, color.RGBA{0, 0, 124, 255}},
-	{-42.5, color.RGBA{0, 0, 129, 255}},
-	{-41.25, color.RGBA{10, 0, 134, 255}},
-	{-40, color.RGBA{0, 0, 139, 255}},
-	{-38.75, color.RGBA{19, 0, 139, 255}},
-	{-37.5, color.RGBA{29, 0, 139, 255}},
-	{-36.25, color.RGBA{34, 0, 137, 255}},
-	{-35, color.RGBA{39, 0, 139, 255}},
-	{-33.75, color.RGBA{45, 0, 137, 255}},
-	{-32.5, color.RGBA{55, 0, 135, 255}},
-	{-31.25, color.RGBA{62, 0, 133, 255}},
-	{-30, color.RGBA{70, 0, 130, 255}},
-	{-28.75, color.RGBA{77, 0, 129, 255}},
-	{-27.5, color.RGBA{85, 0, 129, 255}},
-	{-26.25, color.RGBA{92, 0, 128, 255}},
-	{-25, color.RGBA{100, 0, 128, 255}},
-	{-23.75, color.RGBA{109, 0, 128, 255}},
-	{-22.5, color.RGBA{114, 0, 128, 255}},
-	{-21.25, color.RGBA{121, 0, 125, 255}},
-	{-20, color.RGBA{128, 0, 128, 255}},
-	{-19.5, color.RGBA{133, 0, 124, 255}},
-	{-19, color.RGBA{138, 0, 120, 255}},
-	{-17.75, color.RGBA{143, 13, 97, 255}},
-	{-16.5, color.RGBA{157, 26, 78, 255}},
-	{-15.75, color.RGBA{161, 34, 60, 255}},
-	{-15, color.RGBA{165, 42, 42, 255}},
-	{-14.25, color.RGBA{176, 39, 39, 255}},
-	{-13.5, color.RGBA{188, 37, 37, 255}},
-	{-12.75, color.RGBA{199, 34, 34, 255}},
-	{-12, color.RGBA{210, 32, 32, 255}},
-	{-11.5, color.RGBA{221, 24, 24, 255}},
-	{-11, color.RGBA{232, 16, 16, 255}},
-	{-9.75, color.RGBA{243, 8, 8, 255}},
-	{-10, color.RGBA{255, 0, 0, 255}},
-	{-9.25, color.RGBA{255, 17, 0, 255}},
-	{-8.5, color.RGBA{255, 34, 0, 255}},
-	{-7.75, color.RGBA{255, 52, 0, 255}},
-	{-7, color.RGBA{255, 69, 0, 255}},
-	{-6.5, color.RGBA{255, 87, 0, 255}},
-	{-6, color.RGBA{255, 105, 0, 255}},
-	{-5.5, color.RGBA{255, 123, 0, 255}},
-	{-5, color.RGBA{255, 140, 0, 255}},
-	{-4.5, color.RGBA{255, 146, 0, 255}},
-	{-4, color.RGBA{255, 152, 0, 255}},
-	{-3.5, color.RGBA{255, 158, 0, 255}},
-	{-3, color.RGBA{255, 165, 0, 255}},
-	{-2.5, color.RGBA{255, 183, 0, 255}},
-	{-2, color.RGBA{255, 210, 0, 255}},
-	{-1.5, color.RGBA{255, 232, 0, 255}},
-	{-1, color.RGBA{255, 255, 0, 255}},
-	{-0.875, color.RGBA{255, 255, 32, 255}},
-	{-0.75, color.RGBA{255, 255, 63, 255}},
-	{-0.625, color.RGBA{255, 255, 95, 255}},
-	{-0.5, color.RGBA{255, 255, 127, 255}},
-	{-0.4, color.RGBA{255, 255, 151, 255}},
-	{-0.3, color.RGBA{255, 255, 175, 255}},
-	{-0.2, color.RGBA{255, 255, 200, 255}},
-	{-0.1, color.RGBA{255, 255, 224, 255}},
+	{-120, color.RGBA{0, 0, 0, 255}},       // black
+	{-117.5, color.RGBA{0, 0, 17, 255}},    // very very very dark blue
+	{-115, color.RGBA{0, 0, 34, 255}},      // very very dark blue
+	{-112.5, color.RGBA{0, 0, 51, 255}},    // deeper dark blue
+	{-110, color.RGBA{0, 0, 69, 255}},      // very dark blue
+	{-107.5, color.RGBA{0, 0, 86, 255}},    // deeper blue
+	{-105, color.RGBA{0, 0, 104, 255}},     // darker blue
+	{-102.5, color.RGBA{0, 0, 121, 255}},   // more dark blue
+	{-100, color.RGBA{0, 0, 139, 255}},     // dark blue
+	{-97.5, color.RGBA{0, 0, 155, 255}},    // intermediate dark blue
+	{-95, color.RGBA{0, 0, 172, 255}},      // medium dark blue
+	{-92.5, color.RGBA{0, 0, 188, 255}},    // brighter dark blue
+	{-90, color.RGBA{0, 0, 205, 255}},      // medium blue
+	{-87.5, color.RGBA{0, 0, 218, 255}},    // medium bright blue
+	{-85, color.RGBA{0, 0, 230, 255}},      // brighter blue
+	{-82.5, color.RGBA{0, 0, 242, 255}},    // much brighter blue
+	{-80, color.RGBA{0, 0, 255, 255}},      // blue
+	{-77.5, color.RGBA{19, 0, 223, 255}},   // deep blue-indigo
+	{-75, color.RGBA{38, 0, 192, 255}},     // indigo-ish
+	{-72.5, color.RGBA{57, 0, 161, 255}},   // deeper indigo
+	{-70, color.RGBA{75, 0, 130, 255}},     // indigo
+	{-67.5, color.RGBA{94, 0, 150, 255}},   // indigo-violet mix
+	{-65, color.RGBA{112, 0, 171, 255}},    // dark violet-ish
+	{-62.5, color.RGBA{130, 0, 191, 255}},  // darker violet
+	{-60, color.RGBA{148, 0, 211, 255}},    // dark violet
+	{-57.5, color.RGBA{146, 0, 193, 255}},  // violet-ish
+	{-55, color.RGBA{144, 0, 175, 255}},    // medium violet
+	{-52.5, color.RGBA{142, 0, 157, 255}},  // less violet
+	{-50, color.RGBA{139, 0, 139, 255}},    // dark magenta
+	{-47.5, color.RGBA{168, 0, 104, 255}},  // magenta-red mix
+	{-45, color.RGBA{197, 0, 69, 255}},     // magenta-red-ish
+	{-42.5, color.RGBA{226, 0, 34, 255}},   // deep red
+	{-40, color.RGBA{255, 0, 0, 255}},      // red
+	{-37.5, color.RGBA{255, 18, 0, 255}},   // deep red-orange
+	{-35, color.RGBA{255, 35, 0, 255}},     // red-orange mix
+	{-32.5, color.RGBA{255, 52, 0, 255}},   // more orange than red
+	{-30, color.RGBA{255, 69, 0, 255}},     // red-orange
+	{-27.5, color.RGBA{255, 93, 0, 255}},   // orange-ish
+	{-25, color.RGBA{255, 117, 0, 255}},    // deeper orange
+	{-22.5, color.RGBA{255, 141, 0, 255}},  // less deep orange
+	{-20, color.RGBA{255, 165, 0, 255}},    // orange
+	{-17.5, color.RGBA{255, 188, 0, 255}},  // light orange
+	{-15, color.RGBA{255, 210, 0, 255}},    // brighter light orange
+	{-12.5, color.RGBA{255, 233, 0, 255}},  // very light orange
+	{-10, color.RGBA{255, 255, 0, 255}},    // yellow
+	{-7.5, color.RGBA{255, 255, 64, 255}},  // light yellow
+	{-5, color.RGBA{255, 255, 128, 255}},   // very light yellow
+	{-2.5, color.RGBA{255, 255, 192, 255}}, // pale yellow
+	{0, color.RGBA{255, 255, 255, 255}},    // white
 }
 
 // interpolateColor interpolates between two colors (c1 and c2) based on a given fraction.
@@ -160,15 +136,19 @@ func getColorForDBFS(dBFS float64) color.RGBA {
 
 // plotSpectrogram takes PCM audio data and visualizes it as a spectrogram.
 // The resulting spectrogram represents the frequency content of the PCM data over time.
-func plotSpectrogram(pcm []float32, width, height, fftSize, hopSize int) *gg.Context {
-	// Initialize FFT (Fast Fourier Transform) with the specified size.
-	fft := fourier.NewFFT(fftSize)
-
+func plotSpectrogram(pcm []float64, width, height, fftSize, hopSize int) *gg.Context {
 	// Create a new graphics context with the specified width and height.
 	dc := gg.NewContext(width, height)
 	// Set the background color to black.
 	dc.SetColor(color.RGBA{0, 0, 0, 255})
 	dc.Clear()
+
+	// Calculate the total energy in the Hann window function.
+	windowFunc := window.Hann(fftSize)
+	windowEnergy := 0.0
+	for _, w := range windowFunc {
+		windowEnergy += w * w
+	}
 
 	// Loop through the width of the spectrogram, which corresponds to time.
 	for x := 0; x < width; x++ {
@@ -180,22 +160,24 @@ func plotSpectrogram(pcm []float32, width, height, fftSize, hopSize int) *gg.Con
 		}
 
 		// Apply the Hann window function to the PCM data to smooth its edges.
-		windowed := window.Hann(fftSize)
 		src := make([]float64, fftSize)
 		for i := start; i < end; i++ {
-			src[i-start] = float64(pcm[i]) * windowed[i-start]
+			src[i-start] = pcm[i] * windowFunc[i-start] // Windowed data
 		}
 
 		// Compute the FFT of the windowed data, yielding frequency coefficients.
-		spectrum := fft.Coefficients(nil, src)
+		spectrum := fft.FFTReal(src)
 
-		// Loop through the spectrum magnitudes, convert them to dBFS (decibels relative to full scale),
-		// and set the corresponding pixel color based on the magnitude.
+		// Loop through the spectrum magnitudes, convert them to dBFS, and set the pixel color based on the magnitude.
 		for y := 0; y < fftSize/2 && y < height; y++ {
 			// Calculate the magnitude of the spectrum at the current frequency bin.
-			mag := math.Sqrt(math.Pow(real(spectrum[y]), 2) + math.Pow(imag(spectrum[y]), 2))
+			mag := cmplx.Abs(complex128(spectrum[y]))
 			// Convert the magnitude to dBFS.
-			dBFS := 20 * math.Log10((mag / 20))
+			dBFS := (20 * math.Log10(mag/math.Sqrt(windowEnergy))) - 10
+			fmt.Println(windowEnergy)
+			//			if dBFS > -8 {
+			//fmt.Println(dBFS)
+			//}
 			// Set the pixel color based on its dBFS value.
 			dc.SetColor(getColorForDBFS(dBFS))
 			// Draw the pixel on the graphics context.
@@ -208,7 +190,7 @@ func plotSpectrogram(pcm []float32, width, height, fftSize, hopSize int) *gg.Con
 }
 
 // ReadAudioFile reads an audio file from the specified path and returns its data as a slice of float32 values.
-func ReadAudioFile(filePath string) ([]float32, error) {
+func ReadAudioFile(filePath string) ([]float64, error) {
 	// Notify that the reading process has begun.
 	fmt.Print("- Reading audio data")
 
@@ -243,7 +225,7 @@ func ReadAudioFile(filePath string) ([]float32, error) {
 	}
 
 	// Determine the divisor for converting audio samples based on the bit depth.
-	var divisor float32
+	var divisor float64
 	switch decoder.BitDepth {
 	case 16:
 		divisor = 32768.0
@@ -256,7 +238,7 @@ func ReadAudioFile(filePath string) ([]float32, error) {
 	}
 
 	// Slice for holding the PCM audio data.
-	var pcmData []float32
+	var pcmData []float64
 	// Initialize a buffer to read the PCM data.
 	buf := &audio.IntBuffer{Data: make([]int, SampleRate), Format: &audio.Format{SampleRate: int(SampleRate), NumChannels: 1}}
 
@@ -271,9 +253,9 @@ func ReadAudioFile(filePath string) ([]float32, error) {
 		if n == 0 {
 			break
 		}
-		// Convert each PCM sample to a float32 value and append it to the pcmData slice.
+		// Convert each PCM sample to a float64 value and append it to the pcmData slice.
 		for _, sample := range buf.Data[:n] {
-			pcmData = append(pcmData, float32(sample)/divisor)
+			pcmData = append(pcmData, float64(sample)/divisor)
 		}
 	}
 
@@ -282,15 +264,53 @@ func ReadAudioFile(filePath string) ([]float32, error) {
 	return pcmData, nil
 }
 
+func computeDCOffset(samples []float64) float64 {
+	var sum float64
+	for _, sample := range samples {
+		sum += float64(sample)
+	}
+	return sum / float64(len(samples))
+}
+
+func computeMinMaxLevel(samples []float64) (float64, float64) {
+	minLevel := samples[0]
+	maxLevel := samples[0]
+
+	for _, sample := range samples {
+		if sample < minLevel {
+			minLevel = sample
+		}
+		if sample > maxLevel {
+			maxLevel = sample
+		}
+	}
+
+	return minLevel, maxLevel
+}
+
+func computePkLevDB(maxLevel float64) float64 {
+	return 20 * math.Log10(math.Abs(maxLevel))
+}
+
 func main() {
 	pcm, err := ReadAudioFile("tawnyowl.wav") // Your function that returns PCM data as []float32.
 	if err != nil {
 		log.Fatal(err)
 	}
-	width := len(pcm) / 1024 // Adjust as needed.
-	height := 512            // Usually FFT size / 2.
+
+	dcOffset := computeDCOffset(pcm)
+	minLevel, maxLevel := computeMinMaxLevel(pcm)
+	pkLevDB := computePkLevDB(maxLevel)
+
+	fmt.Printf("DC offset   %.6f\n", dcOffset)
+	fmt.Printf("Min level   %.2f\n", minLevel)
+	fmt.Printf("Max level   %.2f\n", maxLevel)
+	fmt.Printf("Pk lev dB   %.2f\n", pkLevDB)
+
+	width := len(pcm) / 880 // Adjust as needed.
+	height := 512           // Usually FFT size / 2.
 	fftSize := 2048
-	hopSize := 1024 // Adjust as needed, depending on overlap.
+	hopSize := 880 // Adjust as needed, depending on overlap.
 
 	dc := plotSpectrogram(pcm, width, height, fftSize, hopSize)
 	dc.SavePNG("spectrogram.png")
