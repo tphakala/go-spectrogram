@@ -126,6 +126,9 @@ func TestRasterParity(t *testing.T) {
 		{"zrange90", sweep(rate, 2.0, 200, 6000), Options{DBRange: 90}, []string{"-z", "90"}},
 		{"gain20", sweep(rate, 2.0, 200, 6000), Options{Gain: 20}, []string{"-Z", "20"}},
 		{"mono-pal", sweep(rate, 2.0, 200, 6000), Options{Monochrome: true}, []string{"-m"}},
+		{"highcolour", sweep(rate, 2.0, 200, 6000), Options{HighColour: true}, []string{"-h"}},
+		// SlackOverlap is the only geometry-affecting field; exercise it end-to-end.
+		{"slack", sweep(rate, 2.0, 200, 6000), Options{SlackOverlap: true}, []string{"-s"}},
 		// Two lengths to exercise both branches of the drain remainder logic.
 		{"drain-a", noise(rate, 1.37, 7), Options{}, nil},
 		{"drain-b", noise(rate, 1.61, 9), Options{}, nil},

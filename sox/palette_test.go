@@ -72,6 +72,7 @@ func TestMakePaletteMatchesSoXPLTE(t *testing.T) {
 		{"alt", Options{AltPalette: true}, []string{"-A"}},
 		{"light", Options{LightBackground: true}, []string{"-l"}},
 		{"perm3", Options{Perm: 3}, []string{"-p", "3"}},
+		{"mono-high", Options{Monochrome: true, HighColour: true}, []string{"-m", "-h"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

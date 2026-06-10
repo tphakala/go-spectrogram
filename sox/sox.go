@@ -1,6 +1,7 @@
 package sox
 
 import (
+	"fmt"
 	"image"
 	"image/png"
 	"os"
@@ -12,6 +13,9 @@ import (
 // width = columns produced (capped at the effective x_size), height = rows
 // (dft_size/2 + 1). Equivalent to `sox <in> -n spectrogram -r`.
 func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted, error) {
+	if !(sampleRate > 0) { // also rejects NaN
+		return nil, fmt.Errorf("sox: sampleRate must be positive, got %g", sampleRate)
+	}
 	o := normalize(opt)
 	if err := validate(o); err != nil {
 		return nil, err
@@ -56,6 +60,10 @@ func WritePNG(path string, samples []float32, sampleRate float64, opt Options) e
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return png.Encode(f, img)
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		os.Remove(path) // don't leave a partial/corrupt file behind
+		return err
+	}
+	return f.Close()
 }

@@ -5,7 +5,8 @@ import "math"
 
 // FFTPlan is a reusable, zero-allocation iterative radix-2 Cooley-Tukey FFT
 // over complex64. Twiddle factors and the bit-reversal permutation are
-// precomputed once; Forward() reuses an internal scratch buffer.
+// precomputed once; Forward() reuses an internal scratch buffer. It is NOT safe
+// for concurrent use (the scratch buffer is shared); make one per goroutine.
 //
 // NOTE: this is the hand-rolled FFT that the simd library does not yet provide.
 // It is the hot loop of the whole spectrogram. Everything else in this prototype

@@ -71,11 +71,15 @@ func makePalette(o Options) color.Palette {
 		if o.Monochrome {
 			c[0], c[1], c[2] = x, x, x
 			if o.HighColour {
+				// SoX always assigns these channels (0 when x < 0.4), not just
+				// when x >= 0.4 (spectrogram.c:613-616).
+				tint := 0.0
 				if x >= 0.4 {
-					c[(1+perm)%3] = 5.0 / 3 * (x - 0.4)
+					tint = 5.0 / 3 * (x - 0.4)
 				}
-				if perm < 3 && x >= 0.4 {
-					c[(2+perm)%3] = 5.0 / 3 * (x - 0.4)
+				c[(1+perm)%3] = tint
+				if perm < 3 {
+					c[(2+perm)%3] = tint
 				}
 			}
 			pal[fixedPalette+at] = color.RGBA{u8(0.5 + 255*c[0]), u8(0.5 + 255*c[1]), u8(0.5 + 255*c[2]), 255}
@@ -150,7 +154,8 @@ func makePalette(o Options) color.Palette {
 func u8(v float64) uint8 { return uint8(v) }
 
 // altPalette is SoX's alternative fixed colour set (spectrogram.c:127-184),
-// 171 RGB triples. Copied verbatim from the SoX source.
+// 169 RGB triples, matching the installed sox 14.4.2 binary's PLTE (the local
+// SoX source checkout has 168; we target the binary, which is the oracle).
 var altPalette = []byte{
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x05,
 	0x00, 0x01, 0x08, 0x00, 0x01, 0x0a, 0x00, 0x01, 0x0b,
