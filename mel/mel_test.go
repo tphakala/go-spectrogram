@@ -4,18 +4,20 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+
+	"github.com/tphakala/go-spectrogram/internal/dsp"
 )
 
 // TestFFTTone proves the FFT is correct: a pure cosine at bin k0 must put almost
 // all energy in bin k0 (and its mirror), with a matching DFT cross-check.
 func TestFFTTone(t *testing.T) {
-	p := newFFTPlan(NFFT)
+	p := dsp.NewFFTPlan(NFFT)
 	const k0 = 37
 	in := make([]complex64, NFFT)
 	for n := 0; n < NFFT; n++ {
 		in[n] = complex64(complex(math.Cos(2*math.Pi*float64(k0)*float64(n)/float64(NFFT)), 0))
 	}
-	out := p.forward(in)
+	out := p.Forward(in)
 
 	peak, peakMag := -1, float64(-1)
 	for k := 0; k < NFFT/2+1; k++ {

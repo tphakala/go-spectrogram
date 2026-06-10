@@ -32,7 +32,7 @@ func BenchmarkStageFFTandPower(b *testing.B) {
 			off := fr * HopLength
 			f32.Mul(g.frame, sig[off:off+NFFT], g.window)
 			c64.FromReal(g.cin, g.frame)
-			spec := g.plan.forward(g.cin)
+			spec := g.plan.Forward(g.cin)
 			c64.AbsSq(g.power, spec[:NFreq])
 		}
 	}
@@ -49,7 +49,7 @@ func BenchmarkStageFFTForwardOnly(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for fr := 0; fr < nf; fr++ {
-			g.plan.forward(g.cin)
+			g.plan.Forward(g.cin)
 		}
 	}
 }
