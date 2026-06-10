@@ -17,15 +17,19 @@ const pi = math.Pi
 func mathSin(x float64) float64 { return math.Sin(x) }
 
 // soxRunSpectrogram synthesizes nothing; it writes the given samples to a
-// 32-bit float WAV and runs `sox <wav> -n spectrogram -r <args> -o out.png`,
-// returning the PNG path.
-func soxRunSpectrogram(t *testing.T, samples []float32, rate int, args []string) string {
+// 32-bit float WAV and runs sox to produce a spectrogram PNG. When raw is
+// true, -r is inserted (bare raster, no chrome). args are appended before -o.
+func soxRunSpectrogram(t *testing.T, samples []float32, rate int, raw bool, args []string) string {
 	t.Helper()
 	dir := t.TempDir()
 	wav := filepath.Join(dir, "in.wav")
 	writeFloatWAV(t, wav, samples, rate)
 	out := filepath.Join(dir, "out.png")
-	full := append([]string{wav, "-n", "spectrogram", "-r"}, args...)
+	full := []string{wav, "-n", "spectrogram"}
+	if raw {
+		full = append(full, "-r")
+	}
+	full = append(full, args...)
 	full = append(full, "-o", out)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -44,7 +48,7 @@ func soxRunSpectrogram(t *testing.T, samples []float32, rate int, args []string)
 func soxPLTE(t *testing.T, args []string) [][3]byte {
 	t.Helper()
 	samples := tone(8000, 0.5, 1000)
-	png := soxRunSpectrogram(t, samples, 8000, args)
+	png := soxRunSpectrogram(t, samples, 8000, true, args)
 	data, err := os.ReadFile(png)
 	if err != nil {
 		t.Fatal(err)
