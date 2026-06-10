@@ -40,6 +40,7 @@ func decodePalettedIndices(t *testing.T, path string) (int, int, []byte) {
 func comparePNGs(t *testing.T, name string, samples []float32, rate int, opt Options, soxArgs []string) {
 	t.Helper()
 	refPath := soxRunSpectrogram(t, samples, rate, soxArgs)
+	opt.Raw = true // this harness compares against `sox ... spectrogram -r`
 	rw, rh, ref := decodePalettedIndices(t, refPath)
 
 	img, err := Render(samples, float64(rate), opt)
