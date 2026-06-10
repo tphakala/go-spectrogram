@@ -5,8 +5,9 @@ A Go spectrogram library built on [github.com/tphakala/simd](https://github.com/
 It started as a prototype mel-spectrogram generator for BSG-BAT (the
 spectrogram-input bat CNN, [Zenodo 10.5281/zenodo.15495676](https://doi.org/10.5281/zenodo.15495676)),
 written to answer "can the spectrogram run in realtime in Go" with a hard
-in-language number and to scope what `simd` needs. It is now the foundation for a
-fuller spectrogram library.
+in-language number and to scope what `simd` needs. It now supports multiple
+spectrogram types: the original mel-tensor generator (`mel`) and a
+SoX-compatible image renderer (`sox`), over a shared DSP core.
 
 ## Current result (i7-1260P, AVX+FMA)
 
@@ -27,15 +28,35 @@ Run with `GOFLAGS=-mod=mod GOPROXY=off`. The module uses a local `replace` for
 `simd` (see `go.mod`) so it co-develops against the working `simd` checkout at
 `../simd`.
 
-## Layout
+## Packages
 
-- `mel.go` - mel-spectrogram generator. Pipeline: periodic Hann window
-  (`f32.Mul`) -> FFT -> power (`c64.AbsSq`) -> Slaney mel filterbank, 128 bins
-  9-150 kHz (`f32.DotProduct`) -> log10 + per-512-frame normalize
-  (`f32.Mean/StdDev`). Produces the model input tensor `[512, 128]`.
-- `fft.go` - hand-rolled radix-2 FFT, to be replaced by a simd kernel.
-- `cmd/bench` - realtime-factor demo.
+The library is split into subpackages so it can support multiple spectrogram
+types over shared DSP primitives:
+
+- `mel/` - SIMD log-mel spectrogram tensor generator (BSG-BAT preprocessing).
+  Pipeline: periodic Hann window (`f32.Mul`) -> FFT -> power (`c64.AbsSq`) ->
+  Slaney mel filterbank, 128 bins 9-150 kHz (`f32.DotProduct`) -> log10 +
+  per-512-frame normalize (`f32.Mean/StdDev`). Produces the model input tensor
+  `[512, 128]`. Import path is now `github.com/tphakala/go-spectrogram/mel`
+  (moved from the module root).
+- `sox/` - SoX-compatible spectrogram raster image renderer. Produces an
+  `*image.Paletted` visually identical to `sox <in> -n spectrogram -r`
+  (colormap, dB mapping, window/overlap math, dimensions). v1 is raster-only
+  (no axes/legend), mono input, power-of-2 DFT, all SoX palette modes.
+- `internal/dsp/` - shared radix-2 FFT (to be replaced by a simd kernel).
+- `cmd/bench` - realtime-factor demo for the mel generator.
 - `FFT_PRIMITIVE_REQUEST.md` - the simd FFT primitive ask, with profiling data.
+
+### sox usage
+
+```go
+import "github.com/tphakala/go-spectrogram/sox"
+
+// samples: mono []float32 in [-1,1]; sampleRate in Hz.
+err := sox.WritePNG("out.png", samples, 44100, sox.Options{})
+// or get the image:
+img, err := sox.Render(samples, 44100, sox.Options{Monochrome: true})
+```
 
 ## Status / honesty (things to finish as this grows into a lib)
 
@@ -47,5 +68,6 @@ Run with `GOFLAGS=-mod=mod GOPROXY=off`. The module uses a local `replace` for
   is a golden-file parity test against a librosa reference.
 - The mel filterbank is Slaney-normalized to match librosa defaults, but exact
   numerical parity vs librosa is not yet asserted.
-- Root package is `mel`; a fuller lib will likely move it to a `mel/` subpackage
-  with the module root as the umbrella.
+- The `sox` package matches the installed SoX binary's raster visually (palette
+  exact, per-pixel index within 1 of SoX); chrome (axes/labels/legend), multi-
+  channel stacking, non-power-of-2 DFT, and Kaiser/Dolph windows are follow-ups.
