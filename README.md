@@ -41,10 +41,11 @@ types over shared DSP primitives:
   per-512-frame normalize (`f32.Mean/StdDev`). Produces the model input tensor
   `[512, 128]`. Import path is now `github.com/tphakala/go-spectrogram/mel`
   (moved from the module root).
-- `sox/` - SoX-compatible spectrogram raster image renderer. Produces an
-  `*image.Paletted` visually identical to `sox <in> -n spectrogram -r`
-  (colormap, dB mapping, window/overlap math, dimensions). v1 is raster-only
-  (no axes/legend), mono input, power-of-2 DFT, all SoX palette modes.
+- `sox/` - SoX-compatible spectrogram image renderer. Produces an
+  `*image.Paletted` matching `sox <in> -n spectrogram`: full chrome (axes,
+  tick labels, dBFS legend, title/comment, SoX's embedded bitmap font) by
+  default, bare raster via `Raw: true` (`sox ... -r`). Mono input,
+  power-of-2 DFT, all SoX palette modes.
 - `internal/dsp/` - shared radix-2 FFT (to be replaced by a simd kernel).
 - `cmd/bench` - realtime-factor demo for the mel generator.
 
@@ -54,9 +55,9 @@ types over shared DSP primitives:
 import "github.com/tphakala/go-spectrogram/sox"
 
 // samples: mono []float32 in [-1,1]; sampleRate in Hz.
-err := sox.WritePNG("out.png", samples, 44100, sox.Options{})
-// or get the image:
-img, err := sox.Render(samples, 44100, sox.Options{Monochrome: true})
+err := sox.WritePNG("out.png", samples, 44100, sox.Options{})        // full SoX PNG
+img, err := sox.Render(samples, 44100, sox.Options{Raw: true})       // raster only
+img, err = sox.Render(samples, 44100, sox.Options{Title: "My clip"}) // with title
 ```
 
 ## Status / honesty (things to finish as this grows into a lib)
@@ -69,6 +70,6 @@ img, err := sox.Render(samples, 44100, sox.Options{Monochrome: true})
   is a golden-file parity test against a librosa reference.
 - The mel filterbank is Slaney-normalized to match librosa defaults, but exact
   numerical parity vs librosa is not yet asserted.
-- The `sox` package matches the installed SoX binary's raster visually (palette
-  exact, per-pixel index within 1 of SoX); chrome (axes/labels/legend), multi-
-  channel stacking, non-power-of-2 DFT, and Kaiser/Dolph windows are follow-ups.
+- The `sox` package matches the installed SoX binary: chrome pixels exactly,
+  raster per-pixel palette index within 1 (>=99.5% exact). Multi-channel
+  stacking, non-power-of-2 DFT, and Kaiser/Dolph windows are follow-ups.

@@ -7,11 +7,12 @@ import (
 	"os"
 )
 
-// Render computes the spectrogram raster for mono `samples` at `sampleRate`
-// (Hz) and returns it as an *image.Paletted with SoX's exact palette. The image
-// is oriented like SoX: low frequency at the bottom row, time left-to-right,
-// width = columns produced (capped at the effective x_size), height = rows
-// (dft_size/2 + 1). Equivalent to `sox <in> -n spectrogram -r`.
+// Render computes the SoX-compatible spectrogram image for mono `samples` at
+// `sampleRate`. By default it produces the full SoX PNG layout: raster plus
+// axes, tick labels, dBFS legend, footer comment, and optional title,
+// equivalent to `sox <in> -n spectrogram`. With opt.Raw it renders only the
+// raster (`sox ... spectrogram -r`), oriented like SoX: low frequency at the
+// bottom row, time left-to-right.
 func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted, error) {
 	if !(sampleRate > 0) { // also rejects NaN
 		return nil, fmt.Errorf("sox: sampleRate must be positive, got %g", sampleRate)
@@ -37,15 +38,39 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 		autogain = -a.max
 	}
 
-	pal := makePalette(o)
-	img := image.NewPaletted(image.Rect(0, 0, cols, rows), pal)
+	colsTotal, rowsTotal := cols, rows
+	rasterX, rasterY := 0, 0
+	if !o.Raw {
+		colsTotal, rowsTotal = chromeDims(cols, rows, o.Title)
+		rasterX, rasterY = left, below
+	}
+
+	// Draw in SoX's bottom-up coordinates, then blit flipped.
+	cv := &canvas{pix: make([]uint8, colsTotal*rowsTotal), cols: colsTotal}
 	for col := 0; col < cols; col++ {
 		for row := 0; row < rows; row++ {
 			v := float64(a.dBfs[col*rows+row]) + autogain
-			idx := colourIndex(o, v)
-			// Flip vertically: spectrogram row 0 (DC) -> bottom image row.
-			img.SetColorIndex(col, rows-1-row, uint8(idx))
+			cv.set(rasterX+col, rasterY+row, uint8(colourIndex(o, v)))
 		}
+	}
+	if !o.Raw {
+		drawChrome(cv, chromeParams{
+			rasterCols: cols,
+			rasterRows: rows,
+			colsTotal:  colsTotal,
+			rowsTotal:  rowsTotal,
+			secs:       float64(cols) * float64(step) * float64(blocks) / sampleRate,
+			sampleRate: sampleRate,
+			autogain:   autogain,
+			o:          o,
+		})
+	}
+
+	pal := makePalette(o)
+	img := image.NewPaletted(image.Rect(0, 0, colsTotal, rowsTotal), pal)
+	for y := 0; y < rowsTotal; y++ {
+		copy(img.Pix[y*img.Stride:y*img.Stride+colsTotal],
+			cv.pix[(rowsTotal-1-y)*colsTotal:(rowsTotal-y)*colsTotal])
 	}
 	return img, nil
 }

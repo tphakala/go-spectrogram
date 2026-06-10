@@ -1,6 +1,8 @@
-// Package sox renders a spectrogram raster image visually identical to SoX's
+// Package sox renders a spectrogram image visually identical to SoX's
 // `spectrogram` effect (colormap, dB mapping, window/overlap math, dimensions).
-// v1 is raster-only (no axes/legend/font chrome), mono input, power-of-2 DFT.
+// By default it renders the full SoX PNG chrome (axes, tick labels, dBFS
+// legend, footer comment, optional title); Options.Raw gives the bare raster.
+// v1 is mono input, power-of-2 DFT.
 package sox
 
 import (
@@ -47,6 +49,11 @@ type Options struct {
 	LightBackground bool // SoX -l
 	Perm            int  // SoX -p, 1..6; 0 => 1
 	Quantisation    int  // SoX -q, 1..249; 0 => 249
+
+	Raw     bool   // SoX -r: render only the spectrogram raster, no axes/legend/text
+	Title   string // SoX -t: title centred at the top (adds 20 rows); "" means no title (sox -t "" is inexpressible)
+	Comment string // SoX -c: footer text at bottom-left; "" means "Created by SoX" (sox -c "" is inexpressible)
+	NoAxes  bool   // SoX -a: no grid border lines, shorter ticks
 }
 
 // DefaultOptions returns the explicit SoX defaults (equivalent to the zero
@@ -55,8 +62,9 @@ func DefaultOptions() Options {
 	return normalize(Options{})
 }
 
-// normalize fills "unset" fields (0) with SoX defaults. The valid ranges of
-// DBRange/Perm/Quantisation make 0 a safe sentinel.
+// normalize fills "unset" fields (0/empty) with SoX defaults. The valid
+// ranges of DBRange/Perm/Quantisation make 0 a safe sentinel; the empty
+// string is safe for Comment since SoX always emits a default footer.
 func normalize(o Options) Options {
 	if o.DBRange == 0 {
 		o.DBRange = 120
@@ -66,6 +74,9 @@ func normalize(o Options) Options {
 	}
 	if o.Quantisation == 0 {
 		o.Quantisation = 249
+	}
+	if o.Comment == "" {
+		o.Comment = "Created by SoX"
 	}
 	return o
 }
@@ -82,6 +93,15 @@ func validate(o Options) error {
 	if o.XSize < 0 || o.PixelsPerSec < 0 || o.Duration < 0 || o.YSizeTotal < 0 {
 		return fmt.Errorf("sox: XSize, PixelsPerSec, Duration, YSizeTotal must be non-negative")
 	}
+	if o.XSize != 0 && (o.XSize < 100 || o.XSize > maxXSize) {
+		return fmt.Errorf("sox: XSize %d out of range 100..200000", o.XSize)
+	}
+	if o.PixelsPerSec != 0 && (o.PixelsPerSec < 1 || o.PixelsPerSec > 5000) {
+		return fmt.Errorf("sox: PixelsPerSec %g out of range 1..5000", o.PixelsPerSec)
+	}
+	if o.YSizeTotal != 0 && (o.YSizeTotal < 130 || o.YSizeTotal > 200000) {
+		return fmt.Errorf("sox: YSizeTotal %d out of range 130..200000", o.YSizeTotal)
+	}
 	if o.Window == WindowKaiser || o.Window == WindowDolph {
 		return fmt.Errorf("sox: Kaiser/Dolph windows are not implemented in v1")
 	}
@@ -89,7 +109,13 @@ func validate(o Options) error {
 		return fmt.Errorf("sox: invalid Window %d", o.Window)
 	}
 	if o.YSize != 0 {
-		if o.YSize < 2 || !dsp.IsPow2(2*(o.YSize-1)) {
+		// SoX getopts bounds -y to [64, MAX_Y_SIZE] (200000 on 64-bit). Smaller
+		// values would also break chrome drawing: the rotated frequency-axis
+		// label needs more raster rows than a tiny YSize provides.
+		if o.YSize < 64 || o.YSize > 200000 {
+			return fmt.Errorf("sox: YSize %d out of range 64..200000", o.YSize)
+		}
+		if !dsp.IsPow2(2 * (o.YSize - 1)) {
 			return fmt.Errorf("sox: YSize %d does not yield a power-of-2 dft_size (v1)", o.YSize)
 		}
 	}
