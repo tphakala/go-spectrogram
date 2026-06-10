@@ -67,6 +67,19 @@ func TestPrintAtFallbackGlyph(t *testing.T) {
 	checkCanvas(t, c, 40, want, textIndex)
 }
 
+func TestChromeDims(t *testing.T) {
+	// SoX defaults: raster 800x513 -> 944x591 PNG; title adds 20 rows.
+	if c, r := chromeDims(800, 513, ""); c != 944 || r != 591 {
+		t.Errorf("chromeDims(800,513,\"\") = %dx%d, want 944x591", c, r)
+	}
+	if c, r := chromeDims(800, 513, "t"); c != 944 || r != 611 {
+		t.Errorf("chromeDims(800,513,\"t\") = %dx%d, want 944x611", c, r)
+	}
+	if c, r := chromeDims(120, 257, ""); c != 264 || r != 335 {
+		t.Errorf("chromeDims(120,257,\"\") = %dx%d, want 264x335", c, r)
+	}
+}
+
 func TestAxisScale(t *testing.T) {
 	cases := []struct {
 		to       float64

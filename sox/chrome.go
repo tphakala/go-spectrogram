@@ -75,6 +75,18 @@ func (c *canvas) printUp(x, y int, colour uint8, text string) {
 	}
 }
 
+// chromeDims returns the full-image size for a given raster size (mono:
+// c_rows == raster rows). From stop(): rows = below + c_rows + 30 + 20*title,
+// cols = left + cols + between + spectrum_width + right.
+func chromeDims(rasterCols, rasterRows int, title string) (cols, rows int) {
+	cols = left + rasterCols + between + spectrumWidth + right
+	rows = below + rasterRows + 30
+	if title != "" {
+		rows += 20
+	}
+	return cols, rows
+}
+
 // axisScale ports SoX's axis(): pick a tick step for the range [0, to] with
 // at most maxSteps ticks. When maxSteps > 0, step and limit are in tenths of
 // the displayed unit (after applying the SI prefix); prefix is "" or one of
