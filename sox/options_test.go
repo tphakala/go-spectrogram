@@ -42,3 +42,12 @@ func TestValidateAcceptsDefaults(t *testing.T) {
 		t.Errorf("default options rejected: %v", err)
 	}
 }
+
+func TestNormalizeCommentDefault(t *testing.T) {
+	if got := normalize(Options{}).Comment; got != "Created by SoX" {
+		t.Errorf("default Comment = %q, want %q", got, "Created by SoX")
+	}
+	if got := normalize(Options{Comment: "hi"}).Comment; got != "hi" {
+		t.Errorf("Comment = %q, want %q", got, "hi")
+	}
+}
