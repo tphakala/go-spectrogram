@@ -42,7 +42,7 @@ func (g *Generator) melPowerScalar(signal, dst []float32) int {
 		for i := range g.cin {
 			g.cin[i] = complex(g.frame[i], 0)
 		}
-		spec := g.plan.forward(g.cin)
+		spec := g.plan.Forward(g.cin)
 		scAbsSq(g.power, spec[:NFreq])
 		row := dst[fr*NMels : (fr+1)*NMels]
 		for i := 0; i < NMels; i++ {
@@ -133,7 +133,7 @@ func BenchmarkWinPowSIMD(b *testing.B) {
 			off := fr * HopLength
 			f32.Mul(g.frame, sig[off:off+NFFT], g.window)
 			c64.FromReal(g.cin, g.frame)
-			spec := g.plan.forward(g.cin)
+			spec := g.plan.Forward(g.cin)
 			c64.AbsSq(g.power, spec[:NFreq])
 		}
 	}
@@ -151,7 +151,7 @@ func BenchmarkWinPowScalar(b *testing.B) {
 			for j := range g.cin {
 				g.cin[j] = complex(g.frame[j], 0)
 			}
-			spec := g.plan.forward(g.cin)
+			spec := g.plan.Forward(g.cin)
 			scAbsSq(g.power, spec[:NFreq])
 		}
 	}

@@ -7,7 +7,7 @@ import (
 	"math/rand"
 	"time"
 
-	mel "github.com/tphakala/go-spectrogram"
+	"github.com/tphakala/go-spectrogram/mel"
 
 	"github.com/tphakala/simd/cpu"
 )

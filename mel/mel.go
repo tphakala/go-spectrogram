@@ -19,6 +19,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/tphakala/go-spectrogram/internal/dsp"
 	"github.com/tphakala/simd/c64"
 	"github.com/tphakala/simd/f32"
 )
@@ -41,7 +42,7 @@ const (
 type Generator struct {
 	window []float32   // periodic Hann, len NFFT
 	fb     [][]float32 // mel filterbank, NMels x NFreq (dense rows for simd dot)
-	plan   *fftPlan
+	plan   *dsp.FFTPlan
 
 	frame []float32   // windowed frame scratch, len NFFT
 	cin   []complex64 // complex input scratch, len NFFT
@@ -53,7 +54,7 @@ func NewGenerator() *Generator {
 	return &Generator{
 		window: hannPeriodic(NFFT),
 		fb:     melFilterbankSlaney(),
-		plan:   newFFTPlan(NFFT),
+		plan:   dsp.NewFFTPlan(NFFT),
 		frame:  make([]float32, NFFT),
 		cin:    make([]complex64, NFFT),
 		power:  make([]float32, NFreq),
@@ -79,7 +80,7 @@ func (g *Generator) MelPower(signal []float32, dst []float32) int {
 		f32.Mul(g.frame, signal[off:off+NFFT], g.window)
 		// real -> complex, FFT, power of first NFreq bins      (simd for FromReal/AbsSq)
 		c64.FromReal(g.cin, g.frame)
-		spec := g.plan.forward(g.cin)
+		spec := g.plan.Forward(g.cin)
 		c64.AbsSq(g.power, spec[:NFreq])
 		// mel projection: 128 dense dot products of length 513  (simd)
 		row := dst[fr*NMels : (fr+1)*NMels]
