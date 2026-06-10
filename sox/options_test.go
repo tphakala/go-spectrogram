@@ -20,21 +20,23 @@ func TestNormalizeAppliesDefaults(t *testing.T) {
 
 func TestValidateRejectsBadCombos(t *testing.T) {
 	cases := map[string]Options{
-		"both y sizes":    {YSize: 257, YSizeTotal: 550},
-		"kaiser v1":       {Window: WindowKaiser},
-		"dolph v1":        {Window: WindowDolph},
-		"non-p2 ysize":    {YSize: 200}, // dft = 398, not power of two
-		"ysize below 64":  {YSize: 17},  // pow2 dft but under SoX's -y minimum
-		"ysize too large": {YSize: 200001},
-		"xsize below 100": {XSize: 99}, // SoX -x minimum
-		"xsize too large": {XSize: 200001},
-		"pps below 1":     {PixelsPerSec: 0.5}, // SoX -X minimum
-		"pps too large":   {PixelsPerSec: 5001},
-		"three time opts": {XSize: 800, PixelsPerSec: 100, Duration: 3},
-		"negative xsize":  {XSize: -1},
-		"negative dur":    {Duration: -1},
-		"negative pps":    {PixelsPerSec: -1},
-		"negative ytotal": {YSizeTotal: -1},
+		"both y sizes":     {YSize: 257, YSizeTotal: 550},
+		"kaiser v1":        {Window: WindowKaiser},
+		"dolph v1":         {Window: WindowDolph},
+		"non-p2 ysize":     {YSize: 200}, // dft = 398, not power of two
+		"ysize below 64":   {YSize: 17},  // pow2 dft but under SoX's -y minimum
+		"ysize too large":  {YSize: 200001},
+		"xsize below 100":  {XSize: 99}, // SoX -x minimum
+		"xsize too large":  {XSize: 200001},
+		"pps below 1":      {PixelsPerSec: 0.5}, // SoX -X minimum
+		"pps too large":    {PixelsPerSec: 5001},
+		"ytotal below 130": {YSizeTotal: 129}, // SoX -Y minimum
+		"ytotal too large": {YSizeTotal: 200001},
+		"three time opts":  {XSize: 800, PixelsPerSec: 100, Duration: 3},
+		"negative xsize":   {XSize: -1},
+		"negative dur":     {Duration: -1},
+		"negative pps":     {PixelsPerSec: -1},
+		"negative ytotal":  {YSizeTotal: -1},
 	}
 	for name, opt := range cases {
 		if err := validate(normalize(opt)); err == nil {

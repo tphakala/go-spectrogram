@@ -99,6 +99,9 @@ func validate(o Options) error {
 	if o.PixelsPerSec != 0 && (o.PixelsPerSec < 1 || o.PixelsPerSec > 5000) {
 		return fmt.Errorf("sox: PixelsPerSec %g out of range 1..5000", o.PixelsPerSec)
 	}
+	if o.YSizeTotal != 0 && (o.YSizeTotal < 130 || o.YSizeTotal > 200000) {
+		return fmt.Errorf("sox: YSizeTotal %d out of range 130..200000", o.YSizeTotal)
+	}
 	if o.Window == WindowKaiser || o.Window == WindowDolph {
 		return fmt.Errorf("sox: Kaiser/Dolph windows are not implemented in v1")
 	}
