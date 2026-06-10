@@ -66,3 +66,38 @@ func TestPrintAtFallbackGlyph(t *testing.T) {
 	want := glyphPixels('~'+1, 10, 20, false)
 	checkCanvas(t, c, 40, want, textIndex)
 }
+
+func TestAxisScale(t *testing.T) {
+	cases := []struct {
+		to       float64
+		maxSteps int
+		step     int
+		limit    float64
+		prefix   string
+	}{
+		{0.5, 29, 200, 5000, "m"},
+		{2.323, 29, 1, 23.23, ""},
+		{10, 29, 5, 100, ""},
+		{60, 29, 50, 600, ""},
+		{120.7, 29, 50, 1207, ""},
+		{22050, 28, 10, 220.5, "k"},
+		{4000, 28, 2, 40, "k"},
+		{24000, 28, 10, 240, "k"},
+		{11025, 28, 5, 110.25, "k"},
+		{0.05, 10, 50, 500, "m"},
+		{1, 0, 10, 1, ""},
+		{3.9999, 29, 2, 39.998999999999995, ""},
+		{0.0001, 28, 50, 1000, "u"},
+	}
+	for _, c := range cases {
+		step, limit, prefix := axisScale(c.to, c.maxSteps)
+		if step != c.step || prefix != c.prefix {
+			t.Errorf("axisScale(%g, %d) = step %d prefix %q, want %d %q",
+				c.to, c.maxSteps, step, prefix, c.step, c.prefix)
+		}
+		if diff := limit - c.limit; diff > 1e-9 || diff < -1e-9 {
+			t.Errorf("axisScale(%g, %d) limit = %.17g, want %.17g",
+				c.to, c.maxSteps, limit, c.limit)
+		}
+	}
+}

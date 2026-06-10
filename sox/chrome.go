@@ -1,5 +1,7 @@
 package sox
 
+import "math"
+
 // Chrome layout constants from SoX spectrogram.c (stop()).
 const (
 	below         = 48 // rows under the raster (X labels, comment)
@@ -71,4 +73,45 @@ func (c *canvas) printUp(x, y int, colour uint8, text string) {
 		}
 		y += fontAdvance
 	}
+}
+
+// axisScale ports SoX's axis(): pick a tick step for the range [0, to] with
+// at most maxSteps ticks. step and limit are in tenths of the displayed unit
+// (after applying the SI prefix); prefix is "" or one of p n u m k M G T P E.
+func axisScale(to float64, maxSteps int) (step int, limit float64, prefix string) {
+	scale := 1.0
+	fstep := math.Max(1, 10*to)
+	prefixNum := 0
+	if maxSteps != 0 {
+		log10v := math.Inf(1)
+		to *= 10
+		minStep := to / float64(maxSteps)
+		for i := 5; i > 0; i >>= 1 {
+			// Snap near-integer log10 values to the integer before ceil, matching
+			// C library log10 behaviour (e.g. log10(0.1) == -1 in glibc but
+			// slightly above -1 in Go, causing ceil to return 0 instead of -1).
+			l := math.Log10(minStep * float64(i))
+			if r := math.Round(l); math.Abs(l-r) < 1e-9 {
+				l = r
+			}
+			if try := math.Ceil(l); try <= log10v {
+				log10v = try
+				fstep = math.Pow(10, log10v) / float64(i)
+				if i > 1 {
+					log10v--
+				}
+			}
+		}
+		prefixNum = int(math.Floor(log10v / 3))
+		scale = math.Pow(10, -3*float64(prefixNum))
+	}
+	// C: "pnum-kMGTPE" + prefix_num + (prefix_num ? 4 : 11). Index 11 is the
+	// NUL terminator, so no prefix when prefixNum == 0.
+	const prefixes = "pnum-kMGTPE"
+	if prefixNum != 0 {
+		if idx := prefixNum + 4; idx >= 0 && idx < len(prefixes) {
+			prefix = prefixes[idx : idx+1]
+		}
+	}
+	return int(fstep*scale + .5), to * scale, prefix
 }
