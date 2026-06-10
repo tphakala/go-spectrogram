@@ -18,6 +18,8 @@ func deriveDFTSize(o Options) (dft, rows int) {
 		if y < 32 {
 			y = 32
 		}
+		// Smallest power-of-2 strictly greater than y (SoX semantics: the
+		// condition is `<=`, so e.g. y=128 yields dft=256).
 		for dft = 128; dft <= y; dft <<= 1 {
 		}
 	}

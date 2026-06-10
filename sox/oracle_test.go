@@ -2,12 +2,14 @@ package sox
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const pi = math.Pi
@@ -25,9 +27,14 @@ func soxRunSpectrogram(t *testing.T, samples []float32, rate int, args []string)
 	out := filepath.Join(dir, "out.png")
 	full := append([]string{wav, "-n", "spectrogram", "-r"}, args...)
 	full = append(full, "-o", out)
-	cmd := exec.Command("sox", full...)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sox", full...)
 	cmd.Stderr = &bytes.Buffer{}
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Fatalf("sox timed out after 30s\n%s", cmd.Stderr.(*bytes.Buffer).String())
+		}
 		t.Fatalf("sox failed: %v\n%s", err, cmd.Stderr.(*bytes.Buffer).String())
 	}
 	return out
@@ -53,6 +60,9 @@ func readPLTE(t *testing.T, data []byte) [][3]byte {
 		t.Fatal("no PLTE chunk")
 	}
 	length := int(binary.BigEndian.Uint32(data[i-4 : i]))
+	if length <= 0 || length%3 != 0 || i+4+length > len(data) {
+		t.Fatalf("invalid PLTE chunk: length=%d", length)
+	}
 	payload := data[i+4 : i+4+length]
 	out := make([][3]byte, length/3)
 	for k := range out {
