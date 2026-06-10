@@ -19,6 +19,12 @@ func spectrumPoints(o Options) int {
 
 // colourIndex ports spectrogram.c:576-581. x is a dBFS value.
 func colourIndex(o Options, x float64) int {
+	// NaN dBFS (e.g. from NaN input samples) compares false against every case
+	// below and would fall through to int(NaN), which is implementation-defined
+	// in Go. Map it to the floor colour instead.
+	if math.IsNaN(x) {
+		return fixedPalette
+	}
 	sp := spectrumPoints(o)
 	dbr := float64(o.DBRange)
 	var c int

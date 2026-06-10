@@ -44,6 +44,9 @@ func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gai
 		buf:  make([]float64, dftSize),
 		cin:  make([]complex64, dftSize),
 		mag:  make([]float64, rows),
+		// Columns are bounded by xSize; pre-size dBfs to avoid repeated grow/copy
+		// in doColumn (cap only, length stays 0 and grows by append).
+		dBfs: make([]float32, 0, xSize*rows),
 	}
 	a.end = dftSize                   // spectrogram.c:429
 	a.endMin = 0                      // zeroed in start

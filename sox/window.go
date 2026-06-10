@@ -80,9 +80,13 @@ func makeWindow(ws *windowState, end int) float64 {
 		sum += ws.window[i]
 	}
 	n-- // SoX's --n
-	for i := 0; i < dft; i++ {
-		f := float64(n) / float64(dft)
-		ws.window[i] *= 2 / sum * f * f
+	// sum is 0 only for the degenerate end==dftSize window (never reached in the
+	// real flow); guarding avoids 2/sum -> +Inf and the resulting NaN taps.
+	if sum > 0 {
+		for i := 0; i < dft; i++ {
+			f := float64(n) / float64(dft)
+			ws.window[i] *= 2 / sum * f * f
+		}
 	}
 	return sum
 }

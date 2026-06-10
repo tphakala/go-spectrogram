@@ -25,6 +25,10 @@ func TestValidateRejectsBadCombos(t *testing.T) {
 		"dolph v1":        {Window: WindowDolph},
 		"non-p2 ysize":    {YSize: 200}, // dft = 398, not power of two
 		"three time opts": {XSize: 800, PixelsPerSec: 100, Duration: 3},
+		"negative xsize":  {XSize: -1},
+		"negative dur":    {Duration: -1},
+		"negative pps":    {PixelsPerSec: -1},
+		"negative ytotal": {YSizeTotal: -1},
 	}
 	for name, opt := range cases {
 		if err := validate(normalize(opt)); err == nil {

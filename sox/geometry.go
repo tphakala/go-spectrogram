@@ -63,9 +63,23 @@ func stepSizing(actual float64, dftSize int, rate, pixelsPerSec float64, slack b
 		base = math.Sqrt(actual * float64(dftSize))
 	}
 	stepSize = int(base + 0.5)
+	// Defensive clamps (no-ops for valid SoX inputs, where the window sum keeps
+	// stepSize in [1, dftSize]): a zero stepSize would make the division below
+	// +Inf and int(+Inf) is implementation-defined in Go.
+	if stepSize < 1 {
+		stepSize = 1
+	}
 	blockSteps = int(math.Max(rate/pixelsPerSec, 1))
 	stepSize = int(float64(blockSteps)/math.Ceil(float64(blockSteps)/float64(stepSize)) + 0.5)
+	if stepSize < 1 {
+		stepSize = 1
+	} else if stepSize > dftSize {
+		stepSize = dftSize
+	}
 	blockSteps = int(math.Floor(float64(blockSteps)/float64(stepSize) + 0.5))
+	if blockSteps < 1 {
+		blockSteps = 1
+	}
 	blockNorm = 1.0 / float64(blockSteps)
 	return stepSize, blockSteps, blockNorm
 }

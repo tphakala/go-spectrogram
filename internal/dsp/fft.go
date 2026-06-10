@@ -53,6 +53,9 @@ func NewFFTPlan(n int) *FFTPlan {
 // Forward computes the DFT of in (length n) and returns the plan's internal
 // buffer holding the result. The result is valid until the next Forward() call.
 func (p *FFTPlan) Forward(in []complex64) []complex64 {
+	if len(in) < p.n {
+		panic("dsp: FFTPlan.Forward input shorter than FFT size")
+	}
 	n := p.n
 	a := p.buf
 	for i := 0; i < n; i++ {

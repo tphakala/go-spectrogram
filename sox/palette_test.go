@@ -2,6 +2,7 @@ package sox
 
 import (
 	"image/color"
+	"math"
 	"os/exec"
 	"testing"
 )
@@ -24,6 +25,13 @@ func TestColourIndex(t *testing.T) {
 	// At exactly -dBRange => c = 1.
 	if got := colourIndex(o, -120); got != fixedPalette+1 {
 		t.Errorf("at -120 dB: %d, want %d", got, fixedPalette+1)
+	}
+}
+
+func TestColourIndexHandlesNaN(t *testing.T) {
+	o := normalize(Options{})
+	if got := colourIndex(o, math.NaN()); got != fixedPalette {
+		t.Errorf("NaN dBFS: got %d, want floor index %d", got, fixedPalette)
 	}
 }
 

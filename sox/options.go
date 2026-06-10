@@ -79,6 +79,9 @@ func validate(o Options) error {
 	if b2i(o.XSize != 0)+b2i(o.PixelsPerSec != 0)+b2i(o.Duration != 0) > 2 {
 		return fmt.Errorf("sox: at most two of XSize / PixelsPerSec / Duration may be set")
 	}
+	if o.XSize < 0 || o.PixelsPerSec < 0 || o.Duration < 0 || o.YSizeTotal < 0 {
+		return fmt.Errorf("sox: XSize, PixelsPerSec, Duration, YSizeTotal must be non-negative")
+	}
 	if o.Window == WindowKaiser || o.Window == WindowDolph {
 		return fmt.Errorf("sox: Kaiser/Dolph windows are not implemented in v1")
 	}
