@@ -24,6 +24,8 @@ type canvas struct {
 	cols int
 }
 
+// set writes v at column x, row y in bottom-up coordinates (row 0 is the
+// bottom of the final image).
 func (c *canvas) set(x, y int, v uint8) { c.pix[y*c.cols+x] = v }
 
 // printAt draws text left-to-right with (x, y) the top-left of the first
