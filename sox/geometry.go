@@ -53,3 +53,19 @@ func resolveTimeAxis(o Options, duration float64) (xSize int, pixelsPerSec float
 	}
 	return xSize, pixelsPerSec
 }
+
+// stepSizing ports spectrogram.c:431-439. actual is the raw window sum from
+// makeWindow(ws, 0). Returns (stepSize, blockSteps, blockNorm). All divisions
+// are done in float64 to avoid Go integer-division truncating away Ceil/Floor.
+func stepSizing(actual float64, dftSize int, rate, pixelsPerSec float64, slack bool) (stepSize, blockSteps int, blockNorm float64) {
+	base := actual
+	if slack {
+		base = math.Sqrt(actual * float64(dftSize))
+	}
+	stepSize = int(base + 0.5)
+	blockSteps = int(math.Max(rate/pixelsPerSec, 1))
+	stepSize = int(float64(blockSteps)/math.Ceil(float64(blockSteps)/float64(stepSize)) + 0.5)
+	blockSteps = int(math.Floor(float64(blockSteps)/float64(stepSize) + 0.5))
+	blockNorm = 1.0 / float64(blockSteps)
+	return stepSize, blockSteps, blockNorm
+}
