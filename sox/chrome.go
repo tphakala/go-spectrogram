@@ -76,8 +76,10 @@ func (c *canvas) printUp(x, y int, colour uint8, text string) {
 }
 
 // axisScale ports SoX's axis(): pick a tick step for the range [0, to] with
-// at most maxSteps ticks. step and limit are in tenths of the displayed unit
-// (after applying the SI prefix); prefix is "" or one of p n u m k M G T P E.
+// at most maxSteps ticks. When maxSteps > 0, step and limit are in tenths of
+// the displayed unit (after applying the SI prefix); prefix is "" or one of
+// p n u m k M G T P E. When maxSteps == 0 the scaling branch is skipped and
+// limit equals the original to.
 func axisScale(to float64, maxSteps int) (step int, limit float64, prefix string) {
 	scale := 1.0
 	fstep := math.Max(1, 10*to)
