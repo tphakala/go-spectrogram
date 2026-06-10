@@ -51,7 +51,7 @@ type Options struct {
 	Quantisation    int  // SoX -q, 1..249; 0 => 249
 
 	Raw     bool   // SoX -r: render only the spectrogram raster, no axes/legend/text
-	Title   string // SoX -t: title centred at the top (adds 20 rows when non-empty)
+	Title   string // SoX -t: title centred at the top (adds 20 rows); "" means no title (sox -t "" is inexpressible)
 	Comment string // SoX -c: footer text at bottom-left; "" means "Created by SoX"
 	NoAxes  bool   // SoX -a: no grid border lines, shorter ticks
 }
