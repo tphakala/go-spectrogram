@@ -24,9 +24,11 @@ go test -bench=. -benchmem -run=XXX        # benchmarks (incl. simd vs scalar)
 go run ./cmd/bench                         # friendly realtime number + active SIMD path
 ```
 
-Run with `GOFLAGS=-mod=mod GOPROXY=off`. The module uses a local `replace` for
-`simd` (see `go.mod`) so it co-develops against the working `simd` checkout at
-`../simd`.
+The module depends on [`github.com/tphakala/simd`](https://github.com/tphakala/simd)
+(pinned to `v1.2.0-rc.5` in `go.mod`), so a fresh clone builds and tests with the
+standard `go build ./...` / `go test ./...`, no local checkout or `replace`
+needed. To co-develop against a local `simd` working copy, add a temporary
+`replace github.com/tphakala/simd => ../simd` to `go.mod` (do not commit it).
 
 ## Packages
 
