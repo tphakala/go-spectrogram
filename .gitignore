@@ -1,0 +1,15 @@
+# Binaries
+/bench
+*.out
+*.test
+
+# Go workspace / local
+go.work
+go.work.sum
+
+# Profiling
+*.prof
+*.pprof
+
+# Editor / OS
+.DS_Store
