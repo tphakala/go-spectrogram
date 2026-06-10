@@ -1,6 +1,9 @@
 package sox
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
 
 // Chrome layout constants from SoX spectrogram.c (stop()).
 const (
@@ -85,6 +88,119 @@ func chromeDims(rasterCols, rasterRows int, title string) (cols, rows int) {
 		rows += 20
 	}
 	return cols, rows
+}
+
+// chromeParams carries everything drawChrome needs from Render.
+type chromeParams struct {
+	rasterCols int
+	rasterRows int
+	colsTotal  int
+	rowsTotal  int
+	secs       float64 // seconds spanned by the raster: cols*step*blocks/rate
+	sampleRate float64
+	dBRange    int
+	gain       int     // Options.Gain (sox -Z, un-negated)
+	autogain   float64 // -max when Normalize, else 0
+	title      string
+	comment    string
+	noAxes     bool
+	o          Options // normalized options, for colourIndex
+}
+
+// drawChrome ports the !p->raw branch of spectrogram.c stop() (mono path).
+// All coordinates are bottom-up canvas coordinates.
+func drawChrome(c *canvas, p chromeParams) {
+	tickLen := 3
+	if p.noAxes {
+		tickLen = 2
+	}
+
+	if !p.noAxes { // grid border around the raster
+		for j := 0; j < p.rasterRows; j++ {
+			c.set(left-1, below+j, gridIndex)
+			c.set(left+p.rasterCols, below+j, gridIndex)
+		}
+		for i := -1; i <= p.rasterCols; i++ {
+			c.set(left+i, below-1, gridIndex)
+			c.set(left+i, below+p.rasterRows, gridIndex)
+		}
+	}
+
+	if p.title != "" {
+		if w := len(p.title) * fontAdvance; w < p.colsTotal+1 {
+			c.printAt((p.colsTotal-w)/2, p.rowsTotal-fontY, textIndex, p.title)
+		}
+	}
+	if len(p.comment)*fontAdvance < p.colsTotal+1 {
+		c.printAt(1, fontY, textIndex, p.comment)
+	}
+
+	// X axis (time).
+	step, limit, prefix := axisScale(p.secs, p.rasterCols/(fontAdvance*9/2))
+	label := fmt.Sprintf("Time (%ss)", prefix)
+	c.printAt(left+(p.rasterCols-fontAdvance*len(label))/2, 24, textIndex, label)
+	for i := 0; float64(i) <= limit; i += step {
+		x := 0
+		if limit != 0 {
+			x = int(float64(i)/limit*float64(p.rasterCols) + .5)
+		}
+		for y := 0; y < tickLen; y++ {
+			c.set(left-1+x, below-1-y, gridIndex)
+			c.set(left-1+x, below+p.rasterRows+y, gridIndex)
+		}
+		if step == 5 && i%10 != 0 {
+			continue
+		}
+		text := fmt.Sprintf("%.6g", 0.1*float64(i))
+		lx := left + x - 3*len(text)
+		c.printAt(lx, below-6, labelsIndex, text)
+		c.printAt(lx, below+p.rasterRows+14, labelsIndex, text)
+	}
+
+	// Y axis (frequency).
+	step, limit, prefix = axisScale(p.sampleRate/2, (p.rasterRows-1)/((fontY*3+1)>>1))
+	label = fmt.Sprintf("Frequency (%sHz)", prefix)
+	c.printUp(10, below+(p.rasterRows-fontAdvance*len(label))/2, textIndex, label)
+	for i := 0; float64(i) <= limit; i += step {
+		y := 0
+		if limit != 0 {
+			y = int(float64(i)/limit*float64(p.rasterRows-1) + .5)
+		}
+		for x := 0; x < tickLen; x++ {
+			c.set(left-1-x, below+y, gridIndex)
+			c.set(left+p.rasterCols+x, below+y, gridIndex)
+		}
+		if step == 5 && i%10 != 0 {
+			continue
+		}
+		ltext, rtext := "   DC", "DC"
+		if i != 0 {
+			ltext = fmt.Sprintf("%5.6g", 0.1*float64(i))
+			rtext = fmt.Sprintf("%.6g", 0.1*float64(i))
+		}
+		c.printAt(left-4-fontAdvance*5, below+y+5, labelsIndex, ltext)
+		c.printAt(left+p.rasterCols+6, below+y+5, labelsIndex, rtext)
+	}
+
+	// Z axis (dBFS legend).
+	k := p.rasterRows
+	if k > 400 {
+		k = 400
+	}
+	zbase := below + (p.rasterRows-k)/2
+	c.printAt(p.colsTotal-right-2-fontAdvance, zbase-13, textIndex, "dBFS")
+	for j := 0; j < k; j++ {
+		b := uint8(colourIndex(p.o, float64(p.dBRange)*(float64(j)/float64(k-1)-1)))
+		for i := 0; i < spectrumWidth; i++ {
+			c.set(p.colsTotal-right-1-i, zbase+j, b)
+		}
+	}
+	zstep := 10 * int(math.Ceil(float64(p.dBRange)/10*(fontY+2)/float64(k-1)))
+	for i := 0; i <= p.dBRange; i += zstep {
+		y := int(float64(i)/float64(p.dBRange)*float64(k-1) + .5)
+		text := fmt.Sprintf("%+d", i+p.gain-p.dBRange-int(p.autogain+.5))
+		c.printAt(p.colsTotal-right+1, zbase+y+5, labelsIndex, text)
+	}
 }
 
 // axisScale ports SoX's axis(): pick a tick step for the range [0, to] with
