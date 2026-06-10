@@ -60,8 +60,9 @@ func DefaultOptions() Options {
 	return normalize(Options{})
 }
 
-// normalize fills "unset" fields (0) with SoX defaults. The valid ranges of
-// DBRange/Perm/Quantisation make 0 a safe sentinel.
+// normalize fills "unset" fields (0/empty) with SoX defaults. The valid
+// ranges of DBRange/Perm/Quantisation make 0 a safe sentinel; the empty
+// string is safe for Comment since SoX always emits a default footer.
 func normalize(o Options) Options {
 	if o.DBRange == 0 {
 		o.DBRange = 120
