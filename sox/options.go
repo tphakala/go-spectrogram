@@ -52,7 +52,7 @@ type Options struct {
 
 	Raw     bool   // SoX -r: render only the spectrogram raster, no axes/legend/text
 	Title   string // SoX -t: title centred at the top (adds 20 rows); "" means no title (sox -t "" is inexpressible)
-	Comment string // SoX -c: footer text at bottom-left; "" means "Created by SoX"
+	Comment string // SoX -c: footer text at bottom-left; "" means "Created by SoX" (sox -c "" is inexpressible)
 	NoAxes  bool   // SoX -a: no grid border lines, shorter ticks
 }
 
@@ -92,6 +92,12 @@ func validate(o Options) error {
 	}
 	if o.XSize < 0 || o.PixelsPerSec < 0 || o.Duration < 0 || o.YSizeTotal < 0 {
 		return fmt.Errorf("sox: XSize, PixelsPerSec, Duration, YSizeTotal must be non-negative")
+	}
+	if o.XSize != 0 && (o.XSize < 100 || o.XSize > maxXSize) {
+		return fmt.Errorf("sox: XSize %d out of range 100..200000", o.XSize)
+	}
+	if o.PixelsPerSec != 0 && (o.PixelsPerSec < 1 || o.PixelsPerSec > 5000) {
+		return fmt.Errorf("sox: PixelsPerSec %g out of range 1..5000", o.PixelsPerSec)
 	}
 	if o.Window == WindowKaiser || o.Window == WindowDolph {
 		return fmt.Errorf("sox: Kaiser/Dolph windows are not implemented in v1")
