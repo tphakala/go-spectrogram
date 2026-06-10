@@ -13,3 +13,7 @@ go.work.sum
 
 # Editor / OS
 .DS_Store
+
+# Tooling state and local planning docs (never commit)
+.serena/
+docs/superpowers/
