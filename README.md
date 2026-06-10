@@ -35,7 +35,6 @@ Run with `GOFLAGS=-mod=mod GOPROXY=off`. The module uses a local `replace` for
   (`f32.Mean/StdDev`). Produces the model input tensor `[512, 128]`.
 - `fft.go` - hand-rolled radix-2 FFT, to be replaced by a simd kernel.
 - `cmd/bench` - realtime-factor demo.
-- `FFT_PRIMITIVE_REQUEST.md` - the simd FFT primitive ask, with profiling data.
 
 ## Status / honesty (things to finish as this grows into a lib)
 
