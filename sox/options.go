@@ -15,7 +15,7 @@ import (
 type WindowType int
 
 const (
-	WindowHann        WindowType = iota // default
+	WindowHann WindowType = iota // default
 	WindowHamming
 	WindowBartlett
 	WindowRectangular

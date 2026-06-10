@@ -45,10 +45,10 @@ func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gai
 		cin:  make([]complex64, dftSize),
 		mag:  make([]float64, rows),
 	}
-	a.end = dftSize           // spectrogram.c:429
-	a.endMin = 0              // zeroed in start
-	a.lastEnd = 0             // make_window(p, 0) already done before loop
-	a.max = -float64(dBRange) // spectrogram.c:443
+	a.end = dftSize                   // spectrogram.c:429
+	a.endMin = 0                      // zeroed in start
+	a.lastEnd = 0                     // make_window(p, 0) already done before loop
+	a.max = -float64(dBRange)         // spectrogram.c:443
 	a.read = (stepSize - dftSize) / 2 // spectrogram.c:444 (negative)
 	return a
 }

@@ -76,7 +76,7 @@ func TestMakePaletteMatchesSoXPLTE(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ref := soxPLTE(t, c.args)        // [][3]byte from sox PNG
+			ref := soxPLTE(t, c.args) // [][3]byte from sox PNG
 			got := makePalette(normalize(c.opt))
 			if len(got) != len(ref) {
 				t.Fatalf("palette len %d != sox %d", len(got), len(ref))
