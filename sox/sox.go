@@ -61,12 +61,7 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 			rowsTotal:  rowsTotal,
 			secs:       float64(cols) * float64(step) * float64(blocks) / sampleRate,
 			sampleRate: sampleRate,
-			dBRange:    o.DBRange,
-			gain:       o.Gain,
 			autogain:   autogain,
-			title:      o.Title,
-			comment:    o.Comment,
-			noAxes:     o.NoAxes,
 			o:          o,
 		})
 	}

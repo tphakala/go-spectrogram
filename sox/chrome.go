@@ -98,24 +98,21 @@ type chromeParams struct {
 	rowsTotal  int
 	secs       float64 // seconds spanned by the raster: cols*step*blocks/rate
 	sampleRate float64
-	dBRange    int
-	gain       int     // Options.Gain (sox -Z, un-negated)
 	autogain   float64 // -max when Normalize, else 0
-	title      string
-	comment    string
-	noAxes     bool
-	o          Options // normalized options, for colourIndex
+	o          Options // normalized options (DBRange, Gain, Title, Comment, NoAxes, palette)
 }
 
 // drawChrome ports the !p->raw branch of spectrogram.c stop() (mono path).
-// All coordinates are bottom-up canvas coordinates.
+// All coordinates are bottom-up canvas coordinates. Note p.o.Gain is sox -Z
+// un-negated: C flips the sign at parse time, so C's "- p->gain" is
+// "+ p.o.Gain" here.
 func drawChrome(c *canvas, p chromeParams) {
 	tickLen := 3
-	if p.noAxes {
+	if p.o.NoAxes {
 		tickLen = 2
 	}
 
-	if !p.noAxes { // grid border around the raster
+	if !p.o.NoAxes { // grid border around the raster
 		for j := 0; j < p.rasterRows; j++ {
 			c.set(left-1, below+j, gridIndex)
 			c.set(left+p.rasterCols, below+j, gridIndex)
@@ -126,13 +123,13 @@ func drawChrome(c *canvas, p chromeParams) {
 		}
 	}
 
-	if p.title != "" {
-		if w := len(p.title) * fontAdvance; w < p.colsTotal+1 {
-			c.printAt((p.colsTotal-w)/2, p.rowsTotal-fontY, textIndex, p.title)
+	if p.o.Title != "" {
+		if w := len(p.o.Title) * fontAdvance; w < p.colsTotal+1 {
+			c.printAt((p.colsTotal-w)/2, p.rowsTotal-fontY, textIndex, p.o.Title)
 		}
 	}
-	if len(p.comment)*fontAdvance < p.colsTotal+1 {
-		c.printAt(1, fontY, textIndex, p.comment)
+	if len(p.o.Comment)*fontAdvance < p.colsTotal+1 {
+		c.printAt(1, fontY, textIndex, p.o.Comment)
 	}
 
 	// X axis (time).
@@ -190,15 +187,15 @@ func drawChrome(c *canvas, p chromeParams) {
 	zbase := below + (p.rasterRows-k)/2
 	c.printAt(p.colsTotal-right-2-fontAdvance, zbase-13, textIndex, "dBFS")
 	for j := 0; j < k; j++ {
-		b := uint8(colourIndex(p.o, float64(p.dBRange)*(float64(j)/float64(k-1)-1)))
+		b := uint8(colourIndex(p.o, float64(p.o.DBRange)*(float64(j)/float64(k-1)-1)))
 		for i := 0; i < spectrumWidth; i++ {
 			c.set(p.colsTotal-right-1-i, zbase+j, b)
 		}
 	}
-	zstep := 10 * int(math.Ceil(float64(p.dBRange)/10*(fontY+2)/float64(k-1)))
-	for i := 0; i <= p.dBRange; i += zstep {
-		y := int(float64(i)/float64(p.dBRange)*float64(k-1) + .5)
-		text := fmt.Sprintf("%+d", i+p.gain-p.dBRange-int(p.autogain+.5))
+	zstep := 10 * int(math.Ceil(float64(p.o.DBRange)/10*(fontY+2)/float64(k-1)))
+	for i := 0; i <= p.o.DBRange; i += zstep {
+		y := int(float64(i)/float64(p.o.DBRange)*float64(k-1) + .5)
+		text := fmt.Sprintf("%+d", i+p.o.Gain-p.o.DBRange-int(p.autogain+.5))
 		c.printAt(p.colsTotal-right+1, zbase+y+5, labelsIndex, text)
 	}
 }

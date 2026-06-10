@@ -24,6 +24,8 @@ func TestValidateRejectsBadCombos(t *testing.T) {
 		"kaiser v1":       {Window: WindowKaiser},
 		"dolph v1":        {Window: WindowDolph},
 		"non-p2 ysize":    {YSize: 200}, // dft = 398, not power of two
+		"ysize below 64":  {YSize: 17},  // pow2 dft but under SoX's -y minimum
+		"ysize too large": {YSize: 200001},
 		"three time opts": {XSize: 800, PixelsPerSec: 100, Duration: 3},
 		"negative xsize":  {XSize: -1},
 		"negative dur":    {Duration: -1},
@@ -40,6 +42,23 @@ func TestValidateRejectsBadCombos(t *testing.T) {
 func TestValidateAcceptsDefaults(t *testing.T) {
 	if err := validate(normalize(Options{})); err != nil {
 		t.Errorf("default options rejected: %v", err)
+	}
+}
+
+func TestValidateYSizeBounds(t *testing.T) {
+	for _, y := range []int{65, 257} {
+		if err := validate(normalize(Options{YSize: y})); err != nil {
+			t.Errorf("YSize %d rejected: %v", y, err)
+		}
+	}
+}
+
+// Regression: YSize values below SoX's -y minimum of 64 used to pass
+// validation and panic inside drawChrome (the rotated frequency-axis label
+// needs more raster rows than a tiny YSize provides).
+func TestRenderRejectsSmallYSize(t *testing.T) {
+	if _, err := Render(tone(8000, 0.2, 500), 8000, Options{YSize: 17}); err == nil {
+		t.Error("expected error for YSize 17, got nil")
 	}
 }
 

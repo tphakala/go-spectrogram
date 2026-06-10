@@ -1,6 +1,8 @@
-// Package sox renders a spectrogram raster image visually identical to SoX's
+// Package sox renders a spectrogram image visually identical to SoX's
 // `spectrogram` effect (colormap, dB mapping, window/overlap math, dimensions).
-// v1 is raster-only (no axes/legend/font chrome), mono input, power-of-2 DFT.
+// By default it renders the full SoX PNG chrome (axes, tick labels, dBFS
+// legend, footer comment, optional title); Options.Raw gives the bare raster.
+// v1 is mono input, power-of-2 DFT.
 package sox
 
 import (
@@ -98,7 +100,13 @@ func validate(o Options) error {
 		return fmt.Errorf("sox: invalid Window %d", o.Window)
 	}
 	if o.YSize != 0 {
-		if o.YSize < 2 || !dsp.IsPow2(2*(o.YSize-1)) {
+		// SoX getopts bounds -y to [64, MAX_Y_SIZE] (200000 on 64-bit). Smaller
+		// values would also break chrome drawing: the rotated frequency-axis
+		// label needs more raster rows than a tiny YSize provides.
+		if o.YSize < 64 || o.YSize > 200000 {
+			return fmt.Errorf("sox: YSize %d out of range 64..200000", o.YSize)
+		}
+		if !dsp.IsPow2(2 * (o.YSize - 1)) {
 			return fmt.Errorf("sox: YSize %d does not yield a power-of-2 dft_size (v1)", o.YSize)
 		}
 	}
