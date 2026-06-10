@@ -45,7 +45,6 @@ types over shared DSP primitives:
   (no axes/legend), mono input, power-of-2 DFT, all SoX palette modes.
 - `internal/dsp/` - shared radix-2 FFT (to be replaced by a simd kernel).
 - `cmd/bench` - realtime-factor demo for the mel generator.
-- `FFT_PRIMITIVE_REQUEST.md` - the simd FFT primitive ask, with profiling data.
 
 ### sox usage
 
