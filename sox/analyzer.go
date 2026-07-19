@@ -87,11 +87,19 @@ func (a *analyzer) flow(in []float32) {
 			copy(a.buf[:a.dftSize-a.stepSize], a.buf[a.stepSize:a.dftSize])
 			a.read = 0
 		}
-		for idx < n && a.read < a.stepSize {
-			a.buf[a.dftSize-a.stepSize+a.read] = float64(in[idx])
-			idx++
-			a.read++
-			a.end--
+		// Fill in bulk. The per-sample form re-derived the destination index and
+		// paid two bounds checks on every sample, and this loop sees every input
+		// sample in the clip.
+		if k := min(n-idx, a.stepSize-a.read); k > 0 {
+			src := in[idx : idx+k]
+			dst := a.buf[a.dftSize-a.stepSize+a.read:]
+			dst = dst[:len(src)] // BCE hint: dst[i] is provably in range below
+			for i, v := range src {
+				dst[i] = float64(v)
+			}
+			idx += k
+			a.read += k
+			a.end -= k
 		}
 		if a.read != a.stepSize {
 			break
