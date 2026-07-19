@@ -169,7 +169,8 @@ func (p *Plan) transform() {
 	span := 1
 	for _, r := range p.radices {
 		if r == 2 {
-			p.stage2(span)
+			// Only ever the first stage; see stage2.
+			p.stage2()
 		} else {
 			p.stage4(span)
 		}
@@ -177,25 +178,17 @@ func (p *Plan) transform() {
 	}
 }
 
-// stage2 applies one radix-2 stage with the given quarter/half span. It only
-// ever runs as the first stage (span 1), where every twiddle is 1, so the
-// complex multiply drops out entirely.
-func (p *Plan) stage2(span int) {
+// stage2 applies the single radix-2 stage that a decomposition needs when
+// log2(half) is odd. It is always the first stage, so its span is 1 and the
+// only twiddle it could use is W^0 = 1: the complex multiply is skipped
+// entirely and each butterfly is one complex add and one complex subtract.
+func (p *Plan) stage2() {
 	re, im := p.re, p.im
-	m := span * 2
-	step := p.half / m
-	for k := 0; k < p.half; k += m {
-		for j := range span {
-			a := k + j
-			b := a + span
-			wr, wi := p.twRe[j*step], p.twIm[j*step]
-			vr := wr*re[b] - wi*im[b]
-			vi := wr*im[b] + wi*re[b]
-			re[b] = re[a] - vr
-			im[b] = im[a] - vi
-			re[a] += vr
-			im[a] += vi
-		}
+	for k := 0; k < len(re); k += 2 {
+		ar, ai := re[k], im[k]
+		br, bi := re[k+1], im[k+1]
+		re[k], im[k] = ar+br, ai+bi
+		re[k+1], im[k+1] = ar-br, ai-bi
 	}
 }
 
@@ -256,25 +249,52 @@ func (p *Plan) stage4(span int) {
 // With C the half-size spectrum, the even and odd half-spectra of the original
 // real sequence are E = (C[k] + conj(C[half-k]))/2 and
 // O = -i*(C[k] - conj(C[half-k]))/2, and X[k] = E + W_N^k * O.
+// Bins k and half-k read the same pair of half-spectrum values, just swapped,
+// so they are emitted together from one set of loads. Writing E and O for the
+// terms derived from that pair, bin half-k reuses them with two sign flips:
+//
+//	X[k]      = ( E.r + w.r*O.r - w.i*O.i,   E.i + w.r*O.i + w.i*O.r )
+//	X[half-k] = ( E.r + v.r*O.r + v.i*O.i,  -E.i - v.r*O.i + v.i*O.r )
+//
+// with w the unravel twiddle at k and v the one at half-k.
 func (p *Plan) unravelPower(dst []float64) {
 	re, im := p.re, p.im
-	for k := 0; k <= p.half; k++ {
-		// C wraps at half, so k == 0 and k == half both read C[0].
-		ck, cm := 0, 0
-		if k > 0 && k < p.half {
-			ck, cm = k, p.half-k
-		}
-		ckr, cki := re[ck], im[ck]
-		cmr, cmi := re[cm], im[cm]
+	half := p.half
 
-		er := 0.5 * (ckr + cmr)
-		ei := 0.5 * (cki - cmi)
-		or := 0.5 * (cki + cmi)
-		oi := -0.5 * (ckr - cmr)
+	// DC and Nyquist both fold onto C[0] and are purely real.
+	c0r, c0i := re[0], im[0]
+	dst[0] = (c0r + c0i) * (c0r + c0i)
+	dst[half] = (c0r - c0i) * (c0r - c0i)
+
+	for k := 1; k < half-k; k++ {
+		m := half - k
+		akr, aki := re[k], im[k]
+		bkr, bki := re[m], im[m]
+
+		er := 0.5 * (akr + bkr)
+		ei := 0.5 * (aki - bki)
+		or := 0.5 * (aki + bki)
+		oi := -0.5 * (akr - bkr)
 
 		wr, wi := p.unRe[k], p.unIm[k]
 		xr := er + (wr*or - wi*oi)
 		xi := ei + (wr*oi + wi*or)
 		dst[k] = xr*xr + xi*xi
+
+		vr, vi := p.unRe[m], p.unIm[m]
+		yr := er + (vr*or + vi*oi)
+		yi := -ei - (vr*oi - vi*or)
+		dst[m] = yr*yr + yi*yi
+	}
+
+	// The self-paired middle bin, present whenever half is even.
+	if h := half / 2; h*2 == half && h > 0 {
+		akr, aki := re[h], im[h]
+		er, ei := akr, 0.0
+		or, oi := aki, 0.0
+		wr, wi := p.unRe[h], p.unIm[h]
+		xr := er + (wr*or - wi*oi)
+		xi := ei + (wr*oi + wi*or)
+		dst[h] = xr*xr + xi*xi
 	}
 }
