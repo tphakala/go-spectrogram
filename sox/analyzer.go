@@ -3,6 +3,7 @@ package sox
 import (
 	"fmt"
 
+	"github.com/tphakala/go-spectrogram/internal/fft"
 	"github.com/tphakala/simd/f64"
 )
 
@@ -18,7 +19,7 @@ type analyzer struct {
 	ws                   *windowState
 	xSize                int
 
-	plan *f64.STFTPlan
+	plan *fft.Plan
 	buf  []float64 // len dftSize
 	pow  []float64 // per-block power spectrum scratch, len rows
 	db   []float64 // per-column dB scratch, len rows
@@ -39,7 +40,7 @@ type analyzer struct {
 func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gain, dBRange int, ws *windowState, xSize int) (*analyzer, error) {
 	// dftSize is a power of two by construction (validate() rejects YSize values
 	// that do not yield one), so this only fails on a programming error.
-	plan, err := f64.NewSTFTPlan(dftSize)
+	plan, err := fft.NewPlan(dftSize)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +127,7 @@ func (a *analyzer) processBlock() {
 	// pow[k] is |X_k|^2 for k in [0, dftSize/2]. At DC and Nyquist the imaginary
 	// part of a real-input transform is exactly zero, so those bins agree with
 	// SoX's real-only accumulation without a special case.
-	a.plan.STFTPowerInto(a.pow, a.buf, a.ws.window, a.dftSize, f64.NoPad)
+	a.plan.PowerInto(a.pow, a.buf, a.ws.window)
 	f64.Add(a.mag, a.mag, a.pow)
 
 	a.blockNum++
