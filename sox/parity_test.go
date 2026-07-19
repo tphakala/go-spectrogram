@@ -37,7 +37,11 @@ func decodePalettedIndices(t *testing.T, path string) (int, int, []byte) {
 	return w, h, idx
 }
 
-func comparePNGs(t *testing.T, name string, samples []float32, rate int, opt Options, soxArgs []string) {
+// comparePNGs renders with both this package and the sox binary and compares
+// every palette index. maxDelta is the largest per-pixel index difference the
+// case tolerates; it is 0 (bit-exact) for everything except the documented
+// exception in TestRasterParity.
+func comparePNGsTol(t *testing.T, name string, samples []float32, rate int, opt Options, soxArgs []string, maxDelta int) {
 	t.Helper()
 	refPath := soxRunSpectrogram(t, samples, rate, true, soxArgs)
 	opt.Raw = true // this harness compares against `sox ... spectrogram -r`
@@ -71,11 +75,22 @@ func comparePNGs(t *testing.T, name string, samples []float32, rate int, opt Opt
 	total := gw * gh
 	matchPct := 100 * float64(total-mismatch) / float64(total)
 	t.Logf("%s: %.3f%% exact, worst delta %d (%d/%d mismatched)", name, matchPct, worst, mismatch, total)
-	if matchPct < 99.5 {
-		t.Errorf("%s: only %.3f%% exact (want >=99.5%%)", name, matchPct)
+	// The renderer is bit-exact against the binary, so assert exactly that.
+	// A looser bound would let the README's "100.000% of palette indices"
+	// claim rot silently: the float32 FFT this replaced sat at 99.910%, which
+	// the old >=99.5% threshold accepted without complaint.
+	if maxDelta == 0 && mismatch != 0 {
+		t.Errorf("%s: %.3f%% exact, %d/%d pixels differ, worst delta %d (want bit-exact)",
+			name, matchPct, mismatch, total, worst)
 	}
-	if worst > 1 {
-		t.Errorf("%s: worst palette-index delta %d (want <=1)", name, worst)
+	if worst > maxDelta {
+		t.Errorf("%s: worst palette-index delta %d (want <=%d)", name, worst, maxDelta)
+	}
+	// A delta allowance on its own would accept every pixel drifting by one, so
+	// the tolerated cases also have to hold their match rate. The documented
+	// exception sits at 99.920%.
+	if maxDelta > 0 && matchPct < 99.5 {
+		t.Errorf("%s: only %.3f%% exact (want >=99.5%% even with a delta allowance)", name, matchPct)
 	}
 }
 
@@ -111,28 +126,50 @@ func soxSpectrogramSupportsNormalize() bool {
 	return bytes.Contains(out, []byte("\t-n\t"))
 }
 
+func comparePNGs(t *testing.T, name string, samples []float32, rate int, opt Options, soxArgs []string) {
+	t.Helper()
+	comparePNGsTol(t, name, samples, rate, opt, soxArgs, 0)
+}
+
 func TestRasterParity(t *testing.T) {
 	requireSox(t)
 	const rate = 16000
 	cases := []struct {
-		name    string
-		samples []float32
-		opt     Options
-		args    []string
+		name     string
+		samples  []float32
+		opt      Options
+		args     []string
+		maxDelta int // 0 = bit-exact; see zrange-max for the one exception
 	}{
-		{"default-sweep", sweep(rate, 2.0, 200, 6000), Options{}, nil},
-		{"normalize", sweep(rate, 2.0, 200, 6000), Options{Normalize: true}, []string{"-n"}},
-		{"xtrunc", sweep(rate, 3.0, 200, 6000), Options{XSize: 120}, []string{"-x", "120"}},
-		{"ysize512", noise(rate, 1.5, 1), Options{YSize: 257}, []string{"-y", "257"}},
-		{"zrange90", sweep(rate, 2.0, 200, 6000), Options{DBRange: 90}, []string{"-z", "90"}},
-		{"gain20", sweep(rate, 2.0, 200, 6000), Options{Gain: 20}, []string{"-Z", "20"}},
-		{"mono-pal", sweep(rate, 2.0, 200, 6000), Options{Monochrome: true}, []string{"-m"}},
-		{"highcolour", sweep(rate, 2.0, 200, 6000), Options{HighColour: true}, []string{"-h"}},
+		{"default-sweep", sweep(rate, 2.0, 200, 6000), Options{}, nil, 0},
+		{"normalize", sweep(rate, 2.0, 200, 6000), Options{Normalize: true}, []string{"-n"}, 0},
+		{"xtrunc", sweep(rate, 3.0, 200, 6000), Options{XSize: 120}, []string{"-x", "120"}, 0},
+		{"ysize512", noise(rate, 1.5, 1), Options{YSize: 257}, []string{"-y", "257"}, 0},
+		{"zrange90", sweep(rate, 2.0, 200, 6000), Options{DBRange: 90}, []string{"-z", "90"}, 0},
+		{"gain20", sweep(rate, 2.0, 200, 6000), Options{Gain: 20}, []string{"-Z", "20"}, 0},
+		{"mono-pal", sweep(rate, 2.0, 200, 6000), Options{Monochrome: true}, []string{"-m"}, 0},
+		{"highcolour", sweep(rate, 2.0, 200, 6000), Options{HighColour: true}, []string{"-h"}, 0},
 		// SlackOverlap is the only geometry-affecting field; exercise it end-to-end.
-		{"slack", sweep(rate, 2.0, 200, 6000), Options{SlackOverlap: true}, []string{"-s"}},
+		{"slack", sweep(rate, 2.0, 200, 6000), Options{SlackOverlap: true}, []string{"-s"}, 0},
 		// Two lengths to exercise both branches of the drain remainder logic.
-		{"drain-a", noise(rate, 1.37, 7), Options{}, nil},
-		{"drain-b", noise(rate, 1.61, 9), Options{}, nil},
+		{"drain-a", noise(rate, 1.37, 7), Options{}, nil, 0},
+		{"drain-b", noise(rate, 1.61, 9), Options{}, nil, 0},
+		// The dynamic-range extremes validate() permits. The upper end matters
+		// most: at -z 180 a bin 150 dB down is still a distinguishable colour,
+		// so it is the case where a transform that flushed low-energy bins
+		// would actually show.
+		{"zrange-min", sweep(rate, 2.0, 200, 6000), Options{DBRange: 20}, []string{"-z", "20"}, 0},
+		// PRE-EXISTING, not caused by this package's transform: at the maximum
+		// dynamic range validate() allows, 329/410400 pixels land one palette
+		// index off SoX. The count is byte-identical on the float32 FFT this
+		// replaced, so the cause is palette quantisation at the extreme range,
+		// not the DFT. Tracked separately; asserted at delta <= 1 so a real
+		// regression here still fails.
+		{"zrange-max", sweep(rate, 2.0, 200, 6000), Options{DBRange: 180}, []string{"-z", "180"}, 1},
+		// A width that is not a multiple of the raster transpose's 64-wide
+		// tile, so the ragged edge is checked pixel-exact against the oracle
+		// rather than merely for absence of a panic.
+		{"xsize-ragged", sweep(rate, 2.0, 200, 6000), Options{XSize: 517}, []string{"-x", "517"}, 0},
 	}
 	normalizeSupported := soxSpectrogramSupportsNormalize()
 	for _, c := range cases {
@@ -141,7 +178,7 @@ func TestRasterParity(t *testing.T) {
 			if c.name == "normalize" && !normalizeSupported {
 				t.Skip("installed sox does not support spectrogram -n (normalize); added in 14.4.3+")
 			}
-			comparePNGs(t, c.name, c.samples, rate, c.opt, c.args)
+			comparePNGsTol(t, c.name, c.samples, rate, c.opt, c.args, c.maxDelta)
 		})
 	}
 }
@@ -197,18 +234,19 @@ func compareFullPNGs(t *testing.T, name string, samples []float32, rate int, opt
 			}
 		}
 	}
-	if chromeBad > 5 {
-		t.Errorf("%s: %d chrome pixels differ in total", name, chromeBad)
+	// Chrome is drawn from the same font and tick math as SoX, so it matches
+	// exactly; asserting that keeps the README's "chrome and raster alike"
+	// claim honest.
+	if chromeBad != 0 {
+		t.Errorf("%s: %d chrome pixels differ (want 0)", name, chromeBad)
 	}
 	total := rasterCols * rasterRows
 	matchPct := 100 * float64(total-mismatch) / float64(total)
 	t.Logf("%s: raster %.3f%% exact, worst delta %d; chrome mismatches %d",
 		name, matchPct, worst, chromeBad)
-	if matchPct < 99.5 {
-		t.Errorf("%s: raster only %.3f%% exact (want >=99.5%%)", name, matchPct)
-	}
-	if worst > 1 {
-		t.Errorf("%s: worst raster delta %d (want <=1)", name, worst)
+	if mismatch != 0 {
+		t.Errorf("%s: raster %.3f%% exact, %d/%d pixels differ, worst delta %d (want bit-exact)",
+			name, matchPct, mismatch, total, worst)
 	}
 }
 

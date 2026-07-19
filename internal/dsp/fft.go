@@ -8,11 +8,10 @@ import "math"
 // precomputed once; Forward() reuses an internal scratch buffer. It is NOT safe
 // for concurrent use (the scratch buffer is shared); make one per goroutine.
 //
-// NOTE: this is the hand-rolled FFT that the simd library does not yet provide.
-// It is the hot loop of the whole spectrogram. Everything else in this prototype
-// (windowing, power, mel projection, stats) already runs on simd kernels. A
-// fused real-FFT kernel in simd would replace this file and is where the next
-// big speedup lives. See FFT_PRIMITIVE_REQUEST.md.
+// NOTE: this is a full-size COMPLEX transform, so running it on real input
+// costs about twice what a real-input transform does. The sox renderer moved to
+// internal/fft for exactly that reason; mel has not been ported yet and is the
+// remaining consumer.
 type FFTPlan struct {
 	n      int
 	bitrev []int

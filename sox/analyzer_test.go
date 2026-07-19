@@ -22,7 +22,10 @@ func TestAnalyzerToneConcentratesEnergy(t *testing.T) {
 	actual := makeWindow(ws, 0)
 	step, blocks, norm := stepSizing(actual, dft, rate, pps, opt.SlackOverlap)
 
-	a := newAnalyzer(dft, rows, step, blocks, norm, -opt.Gain, opt.DBRange, ws, xSize)
+	a, err := newAnalyzer(dft, rows, step, blocks, norm, -opt.Gain, opt.DBRange, ws, xSize)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cols := a.run(sig)
 	if cols == 0 {
 		t.Fatal("no columns produced")
@@ -50,7 +53,10 @@ func TestAnalyzerColumnCountMatchesGeometry(t *testing.T) {
 	ws := newWindowState(dft, opt.Window)
 	actual := makeWindow(ws, 0)
 	step, blocks, norm := stepSizing(actual, dft, rate, pps, opt.SlackOverlap)
-	a := newAnalyzer(dft, rows, step, blocks, norm, -opt.Gain, opt.DBRange, ws, xSize)
+	a, err := newAnalyzer(dft, rows, step, blocks, norm, -opt.Gain, opt.DBRange, ws, xSize)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cols := a.run(sig)
 	// Expected columns ~ rate*dur / (step*blocks); never exceeds xSize.
 	exp := int(rate * dur / float64(step*blocks))
@@ -59,5 +65,20 @@ func TestAnalyzerColumnCountMatchesGeometry(t *testing.T) {
 	}
 	if cols < exp-2 || cols > exp+2 {
 		t.Errorf("cols %d not within 2 of expected %d", cols, exp)
+	}
+}
+
+// TestNewAnalyzerRejectsBinMismatch guards the invariant that rows equals the
+// DFT bin count. rows sizes every per-column buffer, and the simd reductions in
+// doColumn process only min(len(dst), len(src)) elements, so a mismatch would
+// quietly truncate each column rather than fail.
+func TestNewAnalyzerRejectsBinMismatch(t *testing.T) {
+	ws := newWindowState(1024, WindowHann)
+	makeWindow(ws, 0)
+	if _, err := newAnalyzer(1024, 512, 256, 1, 1, 0, 120, ws, 100); err == nil {
+		t.Fatal("expected an error when rows != dftSize/2+1, got nil")
+	}
+	if _, err := newAnalyzer(1024, 513, 256, 1, 1, 0, 120, ws, 100); err != nil {
+		t.Fatalf("expected the correct bin count to be accepted, got %v", err)
 	}
 }

@@ -1,9 +1,10 @@
 package sox
 
 import (
-	"math"
+	"fmt"
 
-	"github.com/tphakala/go-spectrogram/internal/dsp"
+	"github.com/tphakala/go-spectrogram/internal/fft"
+	"github.com/tphakala/simd/f64"
 )
 
 // analyzer reproduces SoX's streaming spectrogram accumulation. dBfs is stored
@@ -18,10 +19,11 @@ type analyzer struct {
 	ws                   *windowState
 	xSize                int
 
-	plan *dsp.FFTPlan
-	buf  []float64   // len dftSize
-	cin  []complex64 // FFT input scratch, len dftSize
-	mag  []float64   // len rows
+	plan *fft.Plan
+	buf  []float64 // len dftSize
+	pow  []float64 // per-block power spectrum scratch, len rows
+	db   []float64 // per-column dB scratch, len rows
+	mag  []float64 // len rows
 
 	read      int
 	end       int
@@ -35,14 +37,38 @@ type analyzer struct {
 	max  float64
 }
 
-func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gain, dBRange int, ws *windowState, xSize int) *analyzer {
+func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gain, dBRange int, ws *windowState, xSize int) (*analyzer, error) {
+	// dftSize is a power of two by construction (validate() rejects YSize values
+	// that do not yield one), so this only fails on a programming error.
+	plan, err := fft.NewPlan(dftSize)
+	if err != nil {
+		return nil, err
+	}
+	// deriveDFTSize always returns rows == dftSize/2+1, which is exactly the
+	// plan's bin count. Assert it anyway: rows sizes every per-column buffer
+	// here, and the simd reductions in doColumn silently process only
+	// min(len(dst), len(src)) elements, so a mismatch would quietly truncate
+	// each column rather than fail.
+	if rows != plan.NumBins() {
+		return nil, fmt.Errorf("sox: rows %d does not match DFT bin count %d for size %d",
+			rows, plan.NumBins(), dftSize)
+	}
+	// The window is sliced to dftSize on every block, so check it once here
+	// rather than panicking in the hot loop. Check the shape too, not just the
+	// length: makeWindow derives the taper from ws.dftSize, so a state built
+	// for a larger size is long enough to pass a length check while producing
+	// the wrong window.
+	if ws == nil || ws.dftSize != dftSize || len(ws.window) < dftSize {
+		return nil, fmt.Errorf("sox: window state is not sized for DFT size %d", dftSize)
+	}
 	a := &analyzer{
 		dftSize: dftSize, rows: rows,
 		stepSize: stepSize, blockSteps: blockSteps, blockNorm: blockNorm,
 		gain: gain, dBRange: dBRange, ws: ws, xSize: xSize,
-		plan: dsp.NewFFTPlan(dftSize),
+		plan: plan,
 		buf:  make([]float64, dftSize),
-		cin:  make([]complex64, dftSize),
+		pow:  make([]float64, rows),
+		db:   make([]float64, rows),
 		mag:  make([]float64, rows),
 		// Columns are bounded by xSize; pre-size dBfs to avoid repeated grow/copy
 		// in doColumn (cap only, length stays 0 and grows by append).
@@ -53,7 +79,7 @@ func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gai
 	a.lastEnd = 0                     // make_window(p, 0) already done before loop
 	a.max = -float64(dBRange)         // spectrogram.c:443
 	a.read = (stepSize - dftSize) / 2 // spectrogram.c:444 (negative)
-	return a
+	return a, nil
 }
 
 // run feeds all samples then drains, returning the number of columns produced.
@@ -71,11 +97,18 @@ func (a *analyzer) flow(in []float32) {
 			copy(a.buf[:a.dftSize-a.stepSize], a.buf[a.stepSize:a.dftSize])
 			a.read = 0
 		}
-		for idx < n && a.read < a.stepSize {
-			a.buf[a.dftSize-a.stepSize+a.read] = float64(in[idx])
-			idx++
-			a.read++
-			a.end--
+		// Fill in bulk: this loop sees every sample in the clip, so the copy is
+		// shaped to keep the compiler's bounds checks out of it.
+		if k := min(n-idx, a.stepSize-a.read); k > 0 {
+			src := in[idx : idx+k]
+			dst := a.buf[a.dftSize-a.stepSize+a.read:]
+			dst = dst[:len(src)] // BCE hint: dst[i] is provably in range below
+			for i, v := range src {
+				dst[i] = float64(v)
+			}
+			idx += k
+			a.read += k
+			a.end -= k
 		}
 		if a.read != a.stepSize {
 			break
@@ -94,16 +127,15 @@ func (a *analyzer) processBlock() {
 		makeWindow(a.ws, a.end)
 		a.lastEnd = a.end
 	}
-	for i := 0; i < a.dftSize; i++ {
-		a.cin[i] = complex(float32(a.buf[i]*a.ws.window[i]), 0)
-	}
-	spec := a.plan.Forward(a.cin)
-	half := a.dftSize >> 1
-	a.mag[0] += sq(float64(real(spec[0])))
-	for i := 1; i < half; i++ {
-		a.mag[i] += sq(float64(real(spec[i]))) + sq(float64(imag(spec[i])))
-	}
-	a.mag[half] += sq(float64(real(spec[half])))
+	// One frame: the fused real-input transform windows, transforms, and squares
+	// in a single pass, at half the complex FFT size. It runs in float64 to
+	// match SoX's own double-precision lsx_rdft.
+	//
+	// pow[k] is |X_k|^2 for k in [0, dftSize/2]. DC and Nyquist are purely real
+	// for a real-input transform, so they agree with SoX's real-only
+	// accumulation at those two bins.
+	a.plan.PowerInto(a.pow, a.buf, a.ws.window)
+	f64.Add(a.mag, a.mag, a.pow)
 
 	a.blockNum++
 	if a.blockNum == a.blockSteps {
@@ -118,16 +150,21 @@ func (a *analyzer) doColumn() {
 		return
 	}
 	a.cols++
-	for i := 0; i < a.rows; i++ {
-		dBfs := 10 * math.Log10(a.mag[i]*a.blockNorm)
-		a.dBfs = append(a.dBfs, float32(dBfs+float64(a.gain)))
+	// dBfs = 10*log10(mag*blockNorm), vectorized over the whole column: a
+	// per-cell math.Log10 would be over half a million calls for a
+	// default-sized image.
+	f64.Scale(a.db, a.mag, a.blockNorm)
+	f64.Log10(a.db, a.db)
+	f64.Scale(a.db, a.db, 10)
+
+	gain := float64(a.gain)
+	for _, dBfs := range a.db[:a.rows] {
+		a.dBfs = append(a.dBfs, float32(dBfs+gain))
 		if dBfs > a.max {
 			a.max = dBfs
 		}
 	}
-	for i := range a.mag {
-		a.mag[i] = 0
-	}
+	clear(a.mag)
 	a.blockNum = 0
 }
 
@@ -149,5 +186,3 @@ func (a *analyzer) drain() {
 		a.doColumn()
 	}
 }
-
-func sq(x float64) float64 { return x * x }
