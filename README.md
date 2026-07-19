@@ -7,7 +7,9 @@ spectrogram-input bat CNN, [Zenodo 10.5281/zenodo.15495676](https://doi.org/10.5
 written to answer "can the spectrogram run in realtime in Go" with a hard
 in-language number and to scope what `simd` needs. It now supports multiple
 spectrogram types: the original mel-tensor generator (`mel`) and a
-SoX-compatible image renderer (`sox`), over a shared DSP core.
+SoX-compatible image renderer (`sox`). The two no longer share a transform:
+`sox` runs the vendored real-input radix-4 FFT in `internal/fft`, `mel` is
+still on the full-size complex FFT in `internal/dsp`.
 
 ## Current results (i7-1260P, AVX2+FMA)
 
@@ -78,9 +80,18 @@ two plans.)
   obvious next speedup here.
 
 ```
-go test ./...                              # correctness (FFT tone, shapes, normalize range)
-go test -bench=. -benchmem -run=XXX        # benchmarks (incl. simd vs scalar)
+go test ./...                              # correctness, plus SoX parity when sox is installed
+go test -bench=. -benchmem -run=XXX        # benchmarks (vendored transform vs simd)
 go run ./cmd/bench                         # friendly realtime number + active SIMD path
+go test -run XXX -fuzz FuzzPowerInto ./internal/fft/   # transform invariants
+```
+
+The parity tests need the `sox` binary on PATH and skip without it. On a
+hybrid-core host (Intel P/E), pin the benchmarks or the numbers are noise: an
+unpinned run on the i7-1260P above swung by up to 69% between repeats.
+
+```
+taskset -c 0,2,4,6 env GOMAXPROCS=4 go test -bench=. -run=XXX -count=10 ./sox/
 ```
 
 The module depends on [`github.com/tphakala/simd`](https://github.com/tphakala/simd)
@@ -128,9 +139,10 @@ img, err = sox.Render(samples, 44100, sox.Options{Title: "My clip"}) // with tit
 
 ## Status / honesty (things to finish as this grows into a lib)
 
-- Currently mel-specific and tied to the BSG-BAT parameters (384 kHz, n_fft=1024,
-  hop=768, 128 mels, 9-150 kHz). Generalizing the params and adding a plain
-  linear/STFT spectrogram is the obvious next step.
+- `mel` is hardcoded to the BSG-BAT parameters (384 kHz, n_fft=1024, hop=768,
+  128 mels, 9-150 kHz). Generalizing those and adding a plain linear/STFT
+  spectrogram is the obvious next step. (`sox` is fully parameterised via
+  `Options`; this bullet is about `mel` only.)
 - Framing is `center=false` (streaming-friendly). librosa's default
   `center=true` adds n_fft/2 padding; matching it bit-for-bit is a follow-up, as
   is a golden-file parity test against a librosa reference.
