@@ -53,11 +53,22 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 	// Resolve the palette constants once: they are fixed for the whole raster,
 	// and this loop runs once per pixel.
 	sp, dbRange := spectrumPoints(o), float64(o.DBRange)
-	for col := 0; col < cols; col++ {
-		src := a.dBfs[col*rows : (col+1)*rows]
-		for row, d := range src {
-			v := float64(d) + autogain
-			cv.pix[(rasterY+row)*colsTotal+rasterX+col] = uint8(colourIndexAt(v, sp, dbRange))
+	// dBfs is column-major but the canvas is row-major, so this is a transpose.
+	// Walking it naively streams one source column against a destination stride
+	// of colsTotal, which evicts the destination from cache once per column at
+	// larger sizes. Tiling keeps both sides of the transpose resident.
+	const tile = 64
+	for colBase := 0; colBase < cols; colBase += tile {
+		colEnd := min(colBase+tile, cols)
+		for rowBase := 0; rowBase < rows; rowBase += tile {
+			rowEnd := min(rowBase+tile, rows)
+			for col := colBase; col < colEnd; col++ {
+				src := a.dBfs[col*rows : (col+1)*rows]
+				for row := rowBase; row < rowEnd; row++ {
+					v := float64(src[row]) + autogain
+					cv.pix[(rasterY+row)*colsTotal+rasterX+col] = uint8(colourIndexAt(v, sp, dbRange))
+				}
+			}
 		}
 	}
 	if !o.Raw {
