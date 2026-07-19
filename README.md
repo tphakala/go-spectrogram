@@ -9,14 +9,36 @@ in-language number and to scope what `simd` needs. It now supports multiple
 spectrogram types: the original mel-tensor generator (`mel`) and a
 SoX-compatible image renderer (`sox`), over a shared DSP core.
 
-## Current result (i7-1260P, AVX+FMA)
+## Current results (i7-1260P, AVX2+FMA)
+
+### `sox`: faster than the SoX binary, and bit-exact against it
+
+Rendering a 15 s mono clip at 24 kHz, at the four sizes a typical consumer
+asks for, against `sox <in> -n spectrogram -x W -y H -d 15 -z 100` (the binary
+timing includes process spawn, which is part of what calling it actually
+costs):
+
+| size            | dft  | go-spectrogram | SoX 14.4.2 |
+|-----------------|------|----------------|------------|
+| 258 x 129       | 256  | **5.5 ms**     | 6 ms       |
+| 514 x 257       | 512  | **6.2 ms**     | 8 ms       |
+| 1026 x 513      | 1024 | **10.0 ms**    | 16 ms      |
+| 2050 x 1025     | 2048 | **40.4 ms**    | 61 ms      |
+
+Every rendered pixel matches the binary exactly: the parity tests report
+**100.000% exact, worst delta 0** across palette modes, dynamic ranges, gains,
+overlap settings, and the drain/truncation edge cases, chrome included.
+
+Most of the remaining time is the DFT: `f64.STFTPlan`'s butterfly is still
+scalar Go, which is 50% of a default render. simd
+[#192](https://github.com/tphakala/simd/issues/192) tracks vectorizing it.
+
+### `mel`: realtime bat preprocessing
 
 - **8.9 ms** to compute the mel spectrogram for **1 second** of 384 kHz audio.
 - **~106x realtime**, **0.94%** of one core, **zero allocations** in the hot path.
-- The FFT is currently a hand-rolled scalar radix-2 (the one stage not on simd,
-  ~63% of runtime). simd issues [#108](https://github.com/tphakala/simd/issues/108)
-  (real-input STFT) and [#109](https://github.com/tphakala/simd/issues/109)
-  (Log/Log10) track moving it onto the fast path.
+- Not yet moved onto the fused `f32.STFTPlan` + `DotProductBatch` path the way
+  `sox` was; that is the obvious next speedup here.
 
 ```
 go test ./...                              # correctness (FFT tone, shapes, normalize range)
@@ -25,7 +47,7 @@ go run ./cmd/bench                         # friendly realtime number + active S
 ```
 
 The module depends on [`github.com/tphakala/simd`](https://github.com/tphakala/simd)
-(pinned to `v1.2.0-rc.5` in `go.mod`), so a fresh clone builds and tests with the
+(pinned to `v1.5.0` in `go.mod`), so a fresh clone builds and tests with the
 standard `go build ./...` / `go test ./...`, no local checkout or `replace`
 needed. To co-develop against a local `simd` working copy, add a temporary
 `replace github.com/tphakala/simd => ../simd` to `go.mod` (do not commit it).
@@ -46,7 +68,8 @@ types over shared DSP primitives:
   tick labels, dBFS legend, title/comment, SoX's embedded bitmap font) by
   default, bare raster via `Raw: true` (`sox ... -r`). Mono input,
   power-of-2 DFT, all SoX palette modes.
-- `internal/dsp/` - shared radix-2 FFT (to be replaced by a simd kernel).
+- `internal/dsp/` - radix-2 FFT still used by `mel`, plus shared helpers. `sox`
+  now uses simd's `f64.STFTPlan` instead.
 - `cmd/bench` - realtime-factor demo for the mel generator.
 
 ### sox usage
@@ -70,6 +93,9 @@ img, err = sox.Render(samples, 44100, sox.Options{Title: "My clip"}) // with tit
   is a golden-file parity test against a librosa reference.
 - The mel filterbank is Slaney-normalized to match librosa defaults, but exact
   numerical parity vs librosa is not yet asserted.
-- The `sox` package matches the installed SoX binary: chrome pixels exactly,
-  raster per-pixel palette index within 1 (>=99.5% exact). Multi-channel
-  stacking, non-power-of-2 DFT, and Kaiser/Dolph windows are follow-ups.
+- The `sox` package matches the installed SoX binary exactly, chrome and raster
+  alike (100.000% of palette indices, worst delta 0). Multi-channel stacking,
+  non-power-of-2 DFT, and Kaiser/Dolph windows are follow-ups. Note that
+  `-w dolph` is a hard gap for any consumer that uses SoX's `scientific` styles,
+  and the package does no resampling, so a caller that relies on `rate` in the
+  SoX effect chain has to resample before calling `Render`.
