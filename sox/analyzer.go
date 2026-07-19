@@ -3,7 +3,7 @@ package sox
 import (
 	"math"
 
-	"github.com/tphakala/go-spectrogram/internal/dsp"
+	"github.com/tphakala/simd/f64"
 )
 
 // analyzer reproduces SoX's streaming spectrogram accumulation. dBfs is stored
@@ -18,10 +18,10 @@ type analyzer struct {
 	ws                   *windowState
 	xSize                int
 
-	plan *dsp.FFTPlan
-	buf  []float64   // len dftSize
-	cin  []complex64 // FFT input scratch, len dftSize
-	mag  []float64   // len rows
+	plan *f64.STFTPlan
+	buf  []float64 // len dftSize
+	pow  []float64 // per-block power spectrum scratch, len rows
+	mag  []float64 // len rows
 
 	read      int
 	end       int
@@ -35,14 +35,20 @@ type analyzer struct {
 	max  float64
 }
 
-func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gain, dBRange int, ws *windowState, xSize int) *analyzer {
+func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gain, dBRange int, ws *windowState, xSize int) (*analyzer, error) {
+	// dftSize is a power of two by construction (validate() rejects YSize values
+	// that do not yield one), so this only fails on a programming error.
+	plan, err := f64.NewSTFTPlan(dftSize)
+	if err != nil {
+		return nil, err
+	}
 	a := &analyzer{
 		dftSize: dftSize, rows: rows,
 		stepSize: stepSize, blockSteps: blockSteps, blockNorm: blockNorm,
 		gain: gain, dBRange: dBRange, ws: ws, xSize: xSize,
-		plan: dsp.NewFFTPlan(dftSize),
+		plan: plan,
 		buf:  make([]float64, dftSize),
-		cin:  make([]complex64, dftSize),
+		pow:  make([]float64, rows),
 		mag:  make([]float64, rows),
 		// Columns are bounded by xSize; pre-size dBfs to avoid repeated grow/copy
 		// in doColumn (cap only, length stays 0 and grows by append).
@@ -53,7 +59,7 @@ func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gai
 	a.lastEnd = 0                     // make_window(p, 0) already done before loop
 	a.max = -float64(dBRange)         // spectrogram.c:443
 	a.read = (stepSize - dftSize) / 2 // spectrogram.c:444 (negative)
-	return a
+	return a, nil
 }
 
 // run feeds all samples then drains, returning the number of columns produced.
@@ -94,16 +100,16 @@ func (a *analyzer) processBlock() {
 		makeWindow(a.ws, a.end)
 		a.lastEnd = a.end
 	}
-	for i := 0; i < a.dftSize; i++ {
-		a.cin[i] = complex(float32(a.buf[i]*a.ws.window[i]), 0)
-	}
-	spec := a.plan.Forward(a.cin)
-	half := a.dftSize >> 1
-	a.mag[0] += sq(float64(real(spec[0])))
-	for i := 1; i < half; i++ {
-		a.mag[i] += sq(float64(real(spec[i]))) + sq(float64(imag(spec[i])))
-	}
-	a.mag[half] += sq(float64(real(spec[half])))
+	// One frame: the fused real-input transform windows, transforms, and squares
+	// in a single pass, at half the complex FFT size. SoX's own lsx_rdft is
+	// double precision, so staying in float64 here also drops the float32
+	// round-trip the previous complex64 FFT imposed.
+	//
+	// pow[k] is |X_k|^2 for k in [0, dftSize/2]. At DC and Nyquist the imaginary
+	// part of a real-input transform is exactly zero, so those bins agree with
+	// SoX's real-only accumulation without a special case.
+	a.plan.STFTPowerInto(a.pow, a.buf, a.ws.window, a.dftSize, f64.NoPad)
+	f64.Add(a.mag, a.mag, a.pow)
 
 	a.blockNum++
 	if a.blockNum == a.blockSteps {
@@ -149,5 +155,3 @@ func (a *analyzer) drain() {
 		a.doColumn()
 	}
 }
-
-func sq(x float64) float64 { return x * x }

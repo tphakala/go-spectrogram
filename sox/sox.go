@@ -30,7 +30,10 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 	actual := makeWindow(ws, 0)
 	step, blocks, norm := stepSizing(actual, dft, sampleRate, pps, o.SlackOverlap)
 
-	a := newAnalyzer(dft, rows, step, blocks, norm, -o.Gain, o.DBRange, ws, xSize)
+	a, err := newAnalyzer(dft, rows, step, blocks, norm, -o.Gain, o.DBRange, ws, xSize)
+	if err != nil {
+		return nil, err
+	}
 	cols := a.run(samples)
 
 	autogain := 0.0

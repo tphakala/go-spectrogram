@@ -22,7 +22,10 @@ func TestAnalyzerToneConcentratesEnergy(t *testing.T) {
 	actual := makeWindow(ws, 0)
 	step, blocks, norm := stepSizing(actual, dft, rate, pps, opt.SlackOverlap)
 
-	a := newAnalyzer(dft, rows, step, blocks, norm, -opt.Gain, opt.DBRange, ws, xSize)
+	a, err := newAnalyzer(dft, rows, step, blocks, norm, -opt.Gain, opt.DBRange, ws, xSize)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cols := a.run(sig)
 	if cols == 0 {
 		t.Fatal("no columns produced")
@@ -50,7 +53,10 @@ func TestAnalyzerColumnCountMatchesGeometry(t *testing.T) {
 	ws := newWindowState(dft, opt.Window)
 	actual := makeWindow(ws, 0)
 	step, blocks, norm := stepSizing(actual, dft, rate, pps, opt.SlackOverlap)
-	a := newAnalyzer(dft, rows, step, blocks, norm, -opt.Gain, opt.DBRange, ws, xSize)
+	a, err := newAnalyzer(dft, rows, step, blocks, norm, -opt.Gain, opt.DBRange, ws, xSize)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cols := a.run(sig)
 	// Expected columns ~ rate*dur / (step*blocks); never exceeds xSize.
 	exp := int(rate * dur / float64(step*blocks))
