@@ -38,6 +38,33 @@ exposure on small machines, the pipe plumbing, and the `sox` path configuration.
 for latency can use `Render` and encode itself: `png.BestSpeed` cuts that to
 1.5 ms at the cost of roughly 9 KiB -> 14 KiB per image.
 
+### On arm64 the binary is still ahead
+
+The same comparison on a Raspberry Pi 5 (Cortex-A76, Debian 13, Go 1.26.1),
+where SoX wins at every size:
+
+| size        | `WritePNG` | SoX 14.4.2 |
+|-------------|------------|------------|
+| 258 x 129   | 13.6 ms    | **9 ms**   |
+| 514 x 257   | 18.8 ms    | **14 ms**  |
+| 1026 x 513  | 34.8 ms    | **30 ms**  |
+| 2050 x 1025 | 137.8 ms   | **112 ms** |
+
+Output is still bit-exact there: the parity suite reports 100.000% on arm64
+too, so simd's NEON `Log10` kernel does not perturb a single palette index.
+
+The gap is the transform. On the Pi, `f64.STFTPlan` accounts for ~61% of a
+render (`fftHalf` 41%, `unravelBin` 15%, `packFrame` 4%), and none of it
+reaches a SIMD kernel. `unravelBin` alone costs 15% on arm64 against 6% on
+amd64. Closing this needs simd
+[#192](https://github.com/tphakala/simd/issues/192); there is no fix available
+from this side of the API.
+
+Note that choosing float32 over float64 would not help: measured on the Pi the
+two are within 0.4% at every transform size, which is itself the proof that the
+butterfly never reaches a vector unit. float64 is therefore free, and it is what
+buys the exact parity, so it is the right default until #192 lands.
+
 Every rendered pixel matches the binary exactly: the parity tests report
 **100.000% exact, worst delta 0** across palette modes, dynamic ranges, gains,
 overlap settings, and the drain/truncation edge cases, chrome included.
