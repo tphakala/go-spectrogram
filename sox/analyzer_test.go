@@ -67,3 +67,17 @@ func TestAnalyzerColumnCountMatchesGeometry(t *testing.T) {
 		t.Errorf("cols %d not within 2 of expected %d", cols, exp)
 	}
 }
+
+// TestNewAnalyzerRejectsBinMismatch guards the invariant that rows equals the
+// DFT bin count. STFTPowerInto writes only whole frames, so a short destination
+// would quietly produce no output instead of an error.
+func TestNewAnalyzerRejectsBinMismatch(t *testing.T) {
+	ws := newWindowState(1024, WindowHann)
+	makeWindow(ws, 0)
+	if _, err := newAnalyzer(1024, 512, 256, 1, 1, 0, 120, ws, 100); err == nil {
+		t.Fatal("expected an error when rows != dftSize/2+1, got nil")
+	}
+	if _, err := newAnalyzer(1024, 513, 256, 1, 1, 0, 120, ws, 100); err != nil {
+		t.Fatalf("expected the correct bin count to be accepted, got %v", err)
+	}
+}

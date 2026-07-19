@@ -1,6 +1,8 @@
 package sox
 
 import (
+	"fmt"
+
 	"github.com/tphakala/simd/f64"
 )
 
@@ -40,6 +42,14 @@ func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gai
 	plan, err := f64.NewSTFTPlan(dftSize)
 	if err != nil {
 		return nil, err
+	}
+	// deriveDFTSize always returns rows == dftSize/2+1, which is exactly the
+	// plan's bin count. Assert it: STFTPowerInto writes whole frames only, so a
+	// destination shorter than NumBins would silently write nothing at all
+	// rather than failing, and every column would come out as digital silence.
+	if rows != plan.NumBins() {
+		return nil, fmt.Errorf("sox: rows %d does not match DFT bin count %d for size %d",
+			rows, plan.NumBins(), dftSize)
 	}
 	a := &analyzer{
 		dftSize: dftSize, rows: rows,
