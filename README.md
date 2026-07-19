@@ -33,6 +33,11 @@ faster at the two large ones. The bigger practical win is not the milliseconds:
 it is losing the subprocess, and with it the spawn cost, the OOM-killer
 exposure on small machines, the pipe plumbing, and the `sox` path configuration.
 
+`WritePNG` uses the stdlib encoder at its default compression, which is about
+3.4 ms of the 13.8 ms at 1026 x 513. A caller that would rather trade file size
+for latency can use `Render` and encode itself: `png.BestSpeed` cuts that to
+1.5 ms at the cost of roughly 9 KiB -> 14 KiB per image.
+
 Every rendered pixel matches the binary exactly: the parity tests report
 **100.000% exact, worst delta 0** across palette modes, dynamic ranges, gains,
 overlap settings, and the drain/truncation edge cases, chrome included.
