@@ -47,8 +47,12 @@ the deployment target that matters most here:
 | 1026 x 513  | **28.3 ms**| 30 ms      |
 | 2050 x 1025 | **109.6 ms**| 112 ms    |
 
-Output is bit-exact there too: the parity suite reports 100.000% on arm64, so
-simd's NEON `Log10` kernel does not perturb a single palette index.
+Output is bit-exact there too, and CI now proves it rather than taking it on
+trust: the test job runs on both `ubuntu-latest` and `ubuntu-24.04-arm`, so the
+NEON `Log10` kernel is held to the same bit-exact assertion as the AVX2 one. A
+further step re-runs the parity comparison with `SIMD_DISABLE=all`, since simd
+picks a vectorized or scalar kernel per host and the two do not agree to the
+last ulp.
 
 arm64 is the harder target. Before the transform was vendored, SoX won by
 1.2-1.5x at every size here; it is now a wash at the small sizes and a small
@@ -56,17 +60,21 @@ win at the large ones. `internal/fft` is the reason, and further gains need
 simd [#192](https://github.com/tphakala/simd/issues/192) to vectorize the
 butterfly.
 
-Choosing float32 over float64 would not help: measured on the Pi the two are
-within 0.4% at every transform size, which is itself the proof that the
-butterfly never reaches a vector unit. float64 is free, and it is what buys the
-exact parity, so it is the right default.
+Choosing float32 over float64 would not help here: measured on the Pi, simd's
+f32 and f64 STFT plans came within 0.4% of each other at every transform size,
+which is what you would expect while the butterfly stays scalar and lane count
+never comes into play. float64 costs nothing measurable and is what matches
+SoX's own double-precision `lsx_rdft`, so it is the right default. (This
+package has no float32 variant to select; the comparison was between simd's
+two plans.)
 
 ### `mel`: realtime bat preprocessing
 
 - **8.9 ms** to compute the mel spectrogram for **1 second** of 384 kHz audio.
 - **~106x realtime**, **0.94%** of one core, **zero allocations** in the hot path.
-- Not yet moved onto the fused `f32.STFTPlan` + `DotProductBatch` path the way
-  `sox` was; that is the obvious next speedup here.
+- Still on `internal/dsp`'s full-size complex FFT, so it pays roughly twice the
+  transform that `sox` now does. Moving it onto a real-input transform is the
+  obvious next speedup here.
 
 ```
 go test ./...                              # correctness (FFT tone, shapes, normalize range)
@@ -96,12 +104,13 @@ types over shared DSP primitives:
   tick labels, dBFS legend, title/comment, SoX's embedded bitmap font) by
   default, bare raster via `Raw: true` (`sox ... -r`). Mono input,
   power-of-2 DFT, all SoX palette modes.
-- `internal/fft/` - vendored radix-4 real-input transform used by `sox`. It
-  replaces simd's `f64.STFTPlan`, whose butterfly is scalar radix-2 and
-  dominated the profile; see simd
-  [#192](https://github.com/tphakala/simd/issues/192). Deliberately minimal
-  (one frame, no framing or padding modes) so it can collapse back into a call
-  into simd once that lands.
+- `internal/fft/` - vendored radix-4 real-input transform used by `sox`. The
+  transform dominates the render, and neither alternative was fast enough:
+  `internal/dsp` runs a full-size complex FFT over real input, and simd's
+  `f64.STFTPlan` halves that but leaves the butterfly scalar. simd
+  [#192](https://github.com/tphakala/simd/issues/192) tracks the f64 kernels
+  that would make this package unnecessary. Deliberately minimal (one frame, no
+  framing or padding modes) so it can collapse back into a simd call.
 - `internal/dsp/` - radix-2 FFT still used by `mel`, plus shared helpers.
 - `cmd/bench` - realtime-factor demo for the mel generator.
 
@@ -126,8 +135,10 @@ img, err = sox.Render(samples, 44100, sox.Options{Title: "My clip"}) // with tit
   is a golden-file parity test against a librosa reference.
 - The mel filterbank is Slaney-normalized to match librosa defaults, but exact
   numerical parity vs librosa is not yet asserted.
-- The `sox` package matches the installed SoX binary exactly, chrome and raster
-  alike (100.000% of palette indices, worst delta 0). Multi-channel stacking,
+- The `sox` package matches the installed SoX binary bit-exactly, chrome and
+  raster alike, except at `DBRange` 180 where 329 of 410400 pixels land one
+  palette index off (pre-existing, identical on the float32 FFT this replaced;
+  see the parity results above). Multi-channel stacking,
   non-power-of-2 DFT, and Kaiser/Dolph windows are follow-ups. Note that
   `-w dolph` is a hard gap for any consumer that uses SoX's `scientific` styles,
   and the package does no resampling, so a caller that relies on `rate` in the

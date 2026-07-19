@@ -38,9 +38,10 @@ func benchSignal(n int, rate float64) []float32 {
 }
 
 // BenchmarkRender covers the full in-process render at birdnet-go's settings,
-// with and without chrome. The reference to beat is the SoX 14.4.2 binary,
-// which on an i7-1260P takes roughly 5/8/14/55 ms for these four presets
-// (including process spawn).
+// with and without chrome. Note that Render stops at an in-memory image, so the
+// like-for-like comparison against the sox binary is BenchmarkWritePNG below,
+// not this one. See the README for the measured figures; do not restate them
+// here, so the two cannot drift apart.
 func BenchmarkRender(b *testing.B) {
 	sig := benchSignal(benchSeconds*benchRate, benchRate)
 	for _, p := range benchPresets {
@@ -82,6 +83,12 @@ func BenchmarkAnalyzer(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
+				// a.run mutates ws.window through makeWindow, so the window
+				// state cannot be shared across iterations. Build it with the
+				// timer stopped: newAnalyzer also builds an fft.Plan, whose
+				// twiddle tables cost ~2*half Sincos calls, and timing that
+				// would measure plan construction rather than the DSP.
+				b.StopTimer()
 				ws := newWindowState(dft, o.Window)
 				actual := makeWindow(ws, 0)
 				step, blocks, norm := stepSizing(actual, dft, benchRate, pps, o.SlackOverlap)
@@ -89,15 +96,21 @@ func BenchmarkAnalyzer(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
+				b.StartTimer()
+
 				a.run(sig)
 			}
 		})
 	}
 }
 
-// BenchmarkWritePNG is the apples-to-apples comparison against the SoX binary:
-// Render alone produces an in-memory image, whereas invoking `sox` also pays
-// for deflate-encoding the PNG and writing it out.
+// BenchmarkWritePNG is the closest comparison against the SoX binary: Render
+// alone produces an in-memory image, whereas invoking `sox` also pays for
+// deflate-encoding the PNG and writing it out.
+//
+// It is still not exact: b.TempDir() is usually tmpfs, and WritePNG does not
+// fsync, so the write half is a memcpy into the page cache plus a rename rather
+// than real device I/O. Treat it as a CPU comparison.
 func BenchmarkWritePNG(b *testing.B) {
 	sig := benchSignal(benchSeconds*benchRate, benchRate)
 	dir := b.TempDir()

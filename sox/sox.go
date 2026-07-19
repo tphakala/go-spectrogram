@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"path/filepath"
 )
 
 // Render computes the SoX-compatible spectrogram image for mono `samples` at
@@ -32,7 +33,7 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 
 	a, err := newAnalyzer(dft, rows, step, blocks, norm, -o.Gain, o.DBRange, ws, xSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sox: building the analyzer for DFT size %d: %w", dft, err)
 	}
 	cols := a.run(samples)
 
@@ -65,8 +66,10 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 			// row-then-col inside the tile so the destination is written
 			// sequentially; the strided source reads stay in L1 for a 64x64 tile.
 			for row := rowBase; row < rowEnd; row++ {
-				// Slice to exactly the tile's span so the write is bounds-check
-				// free; ranging over it is what proves dst[i] in range.
+				// Slice to exactly the tile's span so the WRITE is bounds-check
+				// free; ranging over it is what proves dst[i] in range. The
+				// strided source read still carries one check per pixel, which
+				// Go has no way to express away.
 				start := (rasterY+row)*colsTotal + rasterX + colBase
 				dst := cv.pix[start : start+colEnd-colBase]
 				for i := range dst {
@@ -99,19 +102,56 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 }
 
 // WritePNG renders and encodes to path with the stdlib PNG encoder.
-func WritePNG(path string, samples []float32, sampleRate float64, opt Options) error {
+//
+// The image is written to a unique temporary file in the destination directory
+// and renamed into place, so path either does not exist yet or holds a complete
+// PNG. Encoding a large spectrogram takes milliseconds and consumers commonly
+// serve these files while they are being produced; writing in place would let a
+// reader observe a truncated image.
+//
+// The rename is what provides atomicity. There is deliberately no fsync: it
+// would cost more than the encode on slow storage, and it buys durability
+// across a power cut rather than atomicity, which is not a guarantee the sox
+// binary offers either.
+func WritePNG(path string, samples []float32, sampleRate float64, opt Options) (err error) {
 	img, err := Render(samples, sampleRate, opt)
 	if err != nil {
 		return err
 	}
-	f, err := os.Create(path)
+
+	// Same directory as the destination, so the rename cannot cross a
+	// filesystem boundary. A unique name keeps concurrent writers of the same
+	// destination from sharing a temporary.
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
 	if err != nil {
 		return err
 	}
-	if err := png.Encode(f, img); err != nil {
-		f.Close()
-		os.Remove(path) // don't leave a partial/corrupt file behind
+	tmp := f.Name()
+	renamed := false
+	defer func() {
+		// Keyed on renamed, not on err: a panic in the encoder would leave err
+		// nil and strand the temporary file otherwise.
+		if !renamed {
+			f.Close()
+			os.Remove(tmp)
+		}
+	}()
+
+	if err = png.Encode(f, img); err != nil {
 		return err
 	}
-	return f.Close()
+	if err = f.Close(); err != nil {
+		return err
+	}
+	// os.CreateTemp creates with 0600, but callers expect the 0666&^umask that
+	// os.Create used to give them. A spectrogram served by another user or
+	// container is a normal deployment, and 0600 silently breaks it.
+	if err = os.Chmod(tmp, 0o644); err != nil {
+		return err
+	}
+	if err = os.Rename(tmp, path); err != nil {
+		return err
+	}
+	renamed = true
+	return nil
 }

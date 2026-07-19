@@ -1,12 +1,19 @@
 // Package fft provides the real-input power-spectrum transform used by the sox
 // renderer.
 //
-// It exists because simd's f64.STFTPlan, which this replaces, runs a scalar
-// radix-2 butterfly: on arm64 it accounts for around 61% of a spectrogram
-// render. See github.com/tphakala/simd#192. Once that lands vectorized f64
-// kernels this package should shrink back to a thin call into simd, so the API
-// here is deliberately the minimum the renderer needs (a single frame, no
-// framing or padding modes) rather than a general STFT.
+// It exists because the transform is the renderer's dominant cost and neither
+// available implementation was fast enough: the internal/dsp plan this package
+// displaces ran a full-size complex FFT over real input, and simd's
+// f64.STFTPlan (evaluated at v1.5.0, and the reference these tests still
+// compare against) halves that but leaves the butterfly scalar. Measured on an
+// i7-1260P at nfft=1024, this package is about 1.6x f64.STFTPlan.
+//
+// simd#192 tracks vectorizing that butterfly and adding the f64 kernels this
+// would need; f64 currently exports no ButterflyComplex or RealFFTUnpack at
+// all, so composing simd primitives was not an option for a float64 consumer.
+// Once #192 lands, this package should shrink back to a thin call into simd,
+// so the API here is deliberately the minimum the renderer needs (a single
+// frame, no framing or padding modes) rather than a general STFT.
 //
 // The transform is the standard real-input trick: an nfft-point real sequence
 // is packed into an nfft/2-point complex sequence (evens into the real part,
@@ -16,11 +23,16 @@ package fft
 
 import (
 	"errors"
+	"fmt"
 	"math"
+	"math/bits"
 )
 
-// ErrNotPowerOfTwo is returned when nfft is not a power of two >= 4.
-var ErrNotPowerOfTwo = errors.New("fft: size must be a power of two >= 4")
+// ErrUnsupportedSize is returned by NewPlan when nfft is not a power of two, or
+// is a power of two below 4. It is deliberately not named for the power-of-two
+// condition alone: nfft == 2 is a power of two and is still rejected, because
+// the packed transform needs at least two complex points.
+var ErrUnsupportedSize = errors.New("fft: size must be a power of two >= 4")
 
 // Plan holds the resident twiddle tables and scratch for a fixed transform
 // size. Reuse one across frames to stay allocation-free.
@@ -58,7 +70,7 @@ type Plan struct {
 // must be a power of two and at least 4.
 func NewPlan(nfft int) (*Plan, error) {
 	if nfft < 4 || nfft&(nfft-1) != 0 {
-		return nil, ErrNotPowerOfTwo
+		return nil, ErrUnsupportedSize
 	}
 	half := nfft >> 1
 
@@ -74,10 +86,8 @@ func NewPlan(nfft int) (*Plan, error) {
 		im:   make([]float64, half),
 	}
 
-	logHalf := 0
-	for 1<<logHalf < half {
-		logHalf++
-	}
+	// half is a power of two, so its trailing-zero count is log2(half).
+	logHalf := bits.TrailingZeros(uint(half))
 	if logHalf%2 == 1 {
 		p.radices = append(p.radices, 2)
 	}
@@ -130,14 +140,27 @@ func (p *Plan) buildPerm() {
 	}
 }
 
+// NFFT returns the transform size the plan was built for.
+func (p *Plan) NFFT() int { return p.nfft }
+
 // NumBins returns nfft/2 + 1, the number of bins in the Hermitian
 // half-spectrum (DC through Nyquist).
 func (p *Plan) NumBins() int { return p.half + 1 }
 
 // PowerInto writes the real-input power spectrum |X_k|^2 of one nfft-sample
-// frame into dst[0:NumBins]. window, when non-nil, is applied during the load
-// and must be at least nfft long. signal must be at least nfft long.
+// frame into dst[0:NumBins]. window, when non-nil, is applied during the load.
+//
+// It panics unless len(dst) >= NumBins(), len(signal) >= NFFT(), and, for a
+// non-nil window, len(window) >= NFFT(). The check is explicit because the
+// loads below re-slice these arguments, and a slice expression bound-checks
+// against capacity rather than length: without it, a short slice backed by a
+// larger array would be accepted silently and the transform would read whatever
+// followed it, producing a plausible but wrong spectrum instead of failing.
 func (p *Plan) PowerInto(dst, signal, window []float64) {
+	if len(dst) < p.half+1 || len(signal) < p.nfft || (window != nil && len(window) < p.nfft) {
+		panic(fmt.Sprintf("fft: PowerInto: nfft %d needs dst >= %d, signal >= %d, window >= %d (nil ok); got %d, %d, %d",
+			p.nfft, p.half+1, p.nfft, p.nfft, len(dst), len(signal), len(window)))
+	}
 	p.pack(signal, window)
 	p.transform()
 	p.unravelPower(dst)
@@ -147,19 +170,22 @@ func (p *Plan) PowerInto(dst, signal, window []float64) {
 // applying the window on the way in, and applies the bit-reversal permutation
 // so the transform can run in place.
 func (p *Plan) pack(signal, window []float64) {
-	re, im, br := p.re, p.im, p.perm
-	src := signal[:2*p.half]
+	re, im, br := p.re[:p.half], p.im[:p.half], p.perm
+	src := signal[:2*len(br)]
 	if window == nil {
 		for j, r := range br {
-			re[r] = src[2*j]
-			im[r] = src[2*j+1]
+			s := src[2*j : 2*j+2 : 2*j+2]
+			re[r] = s[0]
+			im[r] = s[1]
 		}
 		return
 	}
-	w := window[:2*p.half]
+	w := window[:2*len(br)]
 	for j, r := range br {
-		re[r] = src[2*j] * w[2*j]
-		im[r] = src[2*j+1] * w[2*j+1]
+		s := src[2*j : 2*j+2 : 2*j+2]
+		ww := w[2*j : 2*j+2 : 2*j+2]
+		re[r] = s[0] * ww[0]
+		im[r] = s[1] * ww[1]
 	}
 }
 
@@ -169,7 +195,12 @@ func (p *Plan) transform() {
 	span := 1
 	for _, r := range p.radices {
 		if r == 2 {
-			// Only ever the first stage; see stage2.
+			// stage2 hardcodes span 1 (see its doc); a radix-2 anywhere but
+			// first would silently produce a wrong transform, so assert rather
+			// than trust the construction in NewPlan.
+			if span != 1 {
+				panic("fft: radix-2 stage at span > 1")
+			}
 			p.stage2()
 		} else {
 			p.stage4(span)
@@ -203,42 +234,43 @@ func (p *Plan) stage2() {
 // which is why the two cross terms need no multiply: rotating by -i is a swap
 // of real and imaginary parts with one sign flip.
 func (p *Plan) stage4(span int) {
-	re, im := p.re, p.im
+	re, im := p.re[:p.half], p.im[:p.half]
 	m := span * 4
 	step := p.half / m
-	for k := 0; k < p.half; k += m {
-		for j := range span {
-			i0 := k + j
-			i1 := i0 + span
-			i2 := i1 + span
-			i3 := i2 + span
-
-			// A is untwiddled; B, C, D carry W^j, W^2j, W^3j.
-			ar, ai := re[i0], im[i0]
+	twRe, twIm := p.twRe[:p.half], p.twIm[:p.half]
+	for k := 0; k+m <= len(re); k += m {
+		r0 := re[k : k+span : k+span]
+		r1 := re[k+span : k+2*span : k+2*span]
+		r2 := re[k+2*span : k+3*span : k+3*span]
+		r3 := re[k+3*span : k+4*span : k+4*span]
+		m0 := im[k : k+span : k+span]
+		m1 := im[k+span : k+2*span : k+2*span]
+		m2 := im[k+2*span : k+3*span : k+3*span]
+		m3 := im[k+3*span : k+4*span : k+4*span]
+		for j := range r0 {
+			ar, ai := r0[j], m0[j]
 
 			t := j * step
-			w1r, w1i := p.twRe[t], p.twIm[t]
-			w2r, w2i := p.twRe[2*t], p.twIm[2*t]
-			w3r, w3i := p.twRe[3*t], p.twIm[3*t]
+			w1r, w1i := twRe[t], twIm[t]
+			w2r, w2i := twRe[2*t], twIm[2*t]
+			w3r, w3i := twRe[3*t], twIm[3*t]
 
-			br := w1r*re[i1] - w1i*im[i1]
-			bi := w1r*im[i1] + w1i*re[i1]
-			cr := w2r*re[i2] - w2i*im[i2]
-			ci := w2r*im[i2] + w2i*re[i2]
-			dr := w3r*re[i3] - w3i*im[i3]
-			di := w3r*im[i3] + w3i*re[i3]
+			br := w1r*r1[j] - w1i*m1[j]
+			bi := w1r*m1[j] + w1i*r1[j]
+			cr := w2r*r2[j] - w2i*m2[j]
+			ci := w2r*m2[j] + w2i*r2[j]
+			dr := w3r*r3[j] - w3i*m3[j]
+			di := w3r*m3[j] + w3i*r3[j]
 
-			// t0 = A+C, t1 = A-C, t2 = B+D, t3 = B-D.
 			t0r, t0i := ar+cr, ai+ci
 			t1r, t1i := ar-cr, ai-ci
 			t2r, t2i := br+dr, bi+di
 			t3r, t3i := br-dr, bi-di
 
-			re[i0], im[i0] = t0r+t2r, t0i+t2i
-			re[i2], im[i2] = t0r-t2r, t0i-t2i
-			// -i*(t3r + i*t3i) = t3i - i*t3r
-			re[i1], im[i1] = t1r+t3i, t1i-t3r
-			re[i3], im[i3] = t1r-t3i, t1i+t3r
+			r0[j], m0[j] = t0r+t2r, t0i+t2i
+			r2[j], m2[j] = t0r-t2r, t0i-t2i
+			r1[j], m1[j] = t1r+t3i, t1i-t3r
+			r3[j], m3[j] = t1r-t3i, t1i+t3r
 		}
 	}
 }
@@ -258,8 +290,10 @@ func (p *Plan) stage4(span int) {
 //
 // with w the unravel twiddle at k and v the one at half-k.
 func (p *Plan) unravelPower(dst []float64) {
-	re, im := p.re, p.im
 	half := p.half
+	re, im := p.re[:half], p.im[:half]
+	unRe, unIm := p.unRe[:half+1], p.unIm[:half+1]
+	dst = dst[:half+1]
 
 	// DC and Nyquist both fold onto C[0] and are purely real.
 	c0r, c0i := re[0], im[0]
@@ -276,12 +310,12 @@ func (p *Plan) unravelPower(dst []float64) {
 		or := 0.5 * (aki + bki)
 		oi := -0.5 * (akr - bkr)
 
-		wr, wi := p.unRe[k], p.unIm[k]
+		wr, wi := unRe[k], unIm[k]
 		xr := er + (wr*or - wi*oi)
 		xi := ei + (wr*oi + wi*or)
 		dst[k] = xr*xr + xi*xi
 
-		vr, vi := p.unRe[m], p.unIm[m]
+		vr, vi := unRe[m], unIm[m]
 		yr := er + (vr*or + vi*oi)
 		yi := -ei - (vr*oi - vi*or)
 		dst[m] = yr*yr + yi*yi
@@ -292,7 +326,7 @@ func (p *Plan) unravelPower(dst []float64) {
 		akr, aki := re[h], im[h]
 		er, ei := akr, 0.0
 		or, oi := aki, 0.0
-		wr, wi := p.unRe[h], p.unIm[h]
+		wr, wi := unRe[h], unIm[h]
 		xr := er + (wr*or - wi*oi)
 		xi := ei + (wr*oi + wi*or)
 		dst[h] = xr*xr + xi*xi

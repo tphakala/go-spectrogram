@@ -69,8 +69,9 @@ func TestAnalyzerColumnCountMatchesGeometry(t *testing.T) {
 }
 
 // TestNewAnalyzerRejectsBinMismatch guards the invariant that rows equals the
-// DFT bin count. STFTPowerInto writes only whole frames, so a short destination
-// would quietly produce no output instead of an error.
+// DFT bin count. rows sizes every per-column buffer, and the simd reductions in
+// doColumn process only min(len(dst), len(src)) elements, so a mismatch would
+// quietly truncate each column rather than fail.
 func TestNewAnalyzerRejectsBinMismatch(t *testing.T) {
 	ws := newWindowState(1024, WindowHann)
 	makeWindow(ws, 0)

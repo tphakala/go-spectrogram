@@ -16,8 +16,8 @@ var benchSizes = []int{256, 512, 1024, 2048}
 //	taskset -c 0,2,4,6 env GOMAXPROCS=4 go test -bench=. -count=10 ./internal/fft/
 func BenchmarkPowerInto(b *testing.B) {
 	for _, nfft := range benchSizes {
-		sig := testSignalF(nfft)
-		win := hannF(nfft)
+		sig := testSignal(nfft)
+		win := hann(nfft)
 		dst := make([]float64, nfft/2+1)
 
 		b.Run(fmt.Sprintf("nfft%d/vendored", nfft), func(b *testing.B) {
@@ -45,8 +45,3 @@ func BenchmarkPowerInto(b *testing.B) {
 		})
 	}
 }
-
-// Duplicated from fft_test.go's helpers so the benchmark file stands alone if
-// the tests are ever split out.
-func testSignalF(n int) []float64 { return testSignal(n) }
-func hannF(n int) []float64       { return hann(n) }

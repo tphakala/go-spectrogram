@@ -45,12 +45,21 @@ func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gai
 		return nil, err
 	}
 	// deriveDFTSize always returns rows == dftSize/2+1, which is exactly the
-	// plan's bin count. Assert it: STFTPowerInto writes whole frames only, so a
-	// destination shorter than NumBins would silently write nothing at all
-	// rather than failing, and every column would come out as digital silence.
+	// plan's bin count. Assert it anyway: rows sizes every per-column buffer
+	// here, and the simd reductions in doColumn silently process only
+	// min(len(dst), len(src)) elements, so a mismatch would quietly truncate
+	// each column rather than fail.
 	if rows != plan.NumBins() {
 		return nil, fmt.Errorf("sox: rows %d does not match DFT bin count %d for size %d",
 			rows, plan.NumBins(), dftSize)
+	}
+	// The window is sliced to dftSize on every block, so check it once here
+	// rather than panicking in the hot loop. Check the shape too, not just the
+	// length: makeWindow derives the taper from ws.dftSize, so a state built
+	// for a larger size is long enough to pass a length check while producing
+	// the wrong window.
+	if ws == nil || ws.dftSize != dftSize || len(ws.window) < dftSize {
+		return nil, fmt.Errorf("sox: window state is not sized for DFT size %d", dftSize)
 	}
 	a := &analyzer{
 		dftSize: dftSize, rows: rows,
@@ -88,9 +97,8 @@ func (a *analyzer) flow(in []float32) {
 			copy(a.buf[:a.dftSize-a.stepSize], a.buf[a.stepSize:a.dftSize])
 			a.read = 0
 		}
-		// Fill in bulk. The per-sample form re-derived the destination index and
-		// paid two bounds checks on every sample, and this loop sees every input
-		// sample in the clip.
+		// Fill in bulk: this loop sees every sample in the clip, so the copy is
+		// shaped to keep the compiler's bounds checks out of it.
 		if k := min(n-idx, a.stepSize-a.read); k > 0 {
 			src := in[idx : idx+k]
 			dst := a.buf[a.dftSize-a.stepSize+a.read:]
@@ -120,13 +128,12 @@ func (a *analyzer) processBlock() {
 		a.lastEnd = a.end
 	}
 	// One frame: the fused real-input transform windows, transforms, and squares
-	// in a single pass, at half the complex FFT size. SoX's own lsx_rdft is
-	// double precision, so staying in float64 here also drops the float32
-	// round-trip the previous complex64 FFT imposed.
+	// in a single pass, at half the complex FFT size. It runs in float64 to
+	// match SoX's own double-precision lsx_rdft.
 	//
-	// pow[k] is |X_k|^2 for k in [0, dftSize/2]. At DC and Nyquist the imaginary
-	// part of a real-input transform is exactly zero, so those bins agree with
-	// SoX's real-only accumulation without a special case.
+	// pow[k] is |X_k|^2 for k in [0, dftSize/2]. DC and Nyquist are purely real
+	// for a real-input transform, so they agree with SoX's real-only
+	// accumulation at those two bins.
 	a.plan.PowerInto(a.pow, a.buf, a.ws.window)
 	f64.Add(a.mag, a.mag, a.pow)
 
@@ -143,15 +150,15 @@ func (a *analyzer) doColumn() {
 		return
 	}
 	a.cols++
-	// dBfs = 10*log10(mag*blockNorm), vectorized over the whole column: the
-	// scalar form calls math.Log10 once per cell, which is over half a million
-	// calls for a default-sized image.
+	// dBfs = 10*log10(mag*blockNorm), vectorized over the whole column: a
+	// per-cell math.Log10 would be over half a million calls for a
+	// default-sized image.
 	f64.Scale(a.db, a.mag, a.blockNorm)
 	f64.Log10(a.db, a.db)
 	f64.Scale(a.db, a.db, 10)
 
 	gain := float64(a.gain)
-	for _, dBfs := range a.db {
+	for _, dBfs := range a.db[:a.rows] {
 		a.dBfs = append(a.dBfs, float32(dBfs+gain))
 		if dBfs > a.max {
 			a.max = dBfs

@@ -14,7 +14,19 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # The parity suite asserts bit-exact agreement with the sox binary, and the
+    # dB path runs a different simd kernel per architecture (AVX2/FMA on amd64,
+    # NEON on arm64), so exactness has to be verified on both rather than
+    # inferred from one.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -47,3 +59,13 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+      # simd dispatches Log10 to a vectorized kernel when the CPU supports it
+      # and to the scalar Go path otherwise, and the two do not agree to the
+      # last ulp. The default job only ever exercises whichever path this runner
+      # happens to select, so pin the scalar fallback and re-run the oracle
+      # comparison to keep the bit-exactness claim true on both.
+      - name: Parity with SIMD kernels disabled
+        env:
+          SIMD_DISABLE: all
+        run: go test -run Parity ./sox/
