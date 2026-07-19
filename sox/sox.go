@@ -6,6 +6,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // Render computes the SoX-compatible spectrogram image for mono `samples` at
@@ -27,19 +28,31 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 	duration := float64(len(samples)) / sampleRate
 	xSize, pps := resolveTimeAxis(o, duration)
 
-	ws := newWindowState(dft, o.Window)
-	actual := makeWindow(ws, 0)
+	workers := resolveWorkers(o.Workers)
+	// The full-length window is only needed for its sum, which sizes the hop;
+	// each analysis goroutine reshapes its own copy from there.
+	actual := makeWindow(newWindowState(dft, o.Window), 0)
 	step, blocks, norm := stepSizing(actual, dft, sampleRate, pps, o.SlackOverlap)
 
-	a, err := newAnalyzer(dft, rows, step, blocks, norm, -o.Gain, o.DBRange, ws, xSize)
+	a, err := analyze(analyzerOpts{
+		dftSize: dft, rows: rows,
+		stepSize: step, blockSteps: blocks, blockNorm: norm,
+		gain: -o.Gain, dBRange: o.DBRange,
+		spectrumPoints: spectrumPoints(o),
+		xSize:          xSize,
+		normalize:      o.Normalize,
+		window:         o.Window,
+		workers:        workers,
+	}, samples)
 	if err != nil {
-		return nil, fmt.Errorf("sox: building the analyzer for DFT size %d: %w", dft, err)
+		return nil, fmt.Errorf("sox: analyzing at DFT size %d: %w", dft, err)
 	}
-	cols := a.run(samples)
+	cols := a.cols
 
 	autogain := 0.0
 	if o.Normalize {
 		autogain = -a.max
+		a.quantise(autogain)
 	}
 
 	colsTotal, rowsTotal := cols, rows
@@ -51,34 +64,11 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 
 	// Draw in SoX's bottom-up coordinates, then blit flipped.
 	cv := &canvas{pix: make([]uint8, colsTotal*rowsTotal), cols: colsTotal}
-	// Resolve the palette constants once: they are fixed for the whole raster,
-	// and this loop runs once per pixel.
-	sp, dbRange := spectrumPoints(o), float64(o.DBRange)
-	// dBfs is column-major but the canvas is row-major, so this is a transpose.
-	// Walking it naively streams one source column against a destination stride
-	// of colsTotal, which evicts the destination from cache once per column at
-	// larger sizes. Tiling keeps both sides of the transpose resident.
-	const tile = 64
-	for colBase := 0; colBase < cols; colBase += tile {
-		colEnd := min(colBase+tile, cols)
-		for rowBase := 0; rowBase < rows; rowBase += tile {
-			rowEnd := min(rowBase+tile, rows)
-			// row-then-col inside the tile so the destination is written
-			// sequentially; the strided source reads stay in L1 for a 64x64 tile.
-			for row := rowBase; row < rowEnd; row++ {
-				// Slice to exactly the tile's span so the WRITE is bounds-check
-				// free; ranging over it is what proves dst[i] in range. The
-				// strided source read still carries one check per pixel, which
-				// Go has no way to express away.
-				start := (rasterY+row)*colsTotal + rasterX + colBase
-				dst := cv.pix[start : start+colEnd-colBase]
-				for i := range dst {
-					v := float64(a.dBfs[(colBase+i)*rows+row]) + autogain
-					dst[i] = uint8(colourIndexAt(v, sp, dbRange))
-				}
-			}
-		}
-	}
+	rasterBlit{
+		dst: cv.pix, src: a.idx,
+		cols: cols, rows: rows,
+		rasterX: rasterX, rasterY: rasterY, colsTotal: colsTotal,
+	}.run(workers)
 	if !o.Raw {
 		drawChrome(cv, chromeParams{
 			rasterCols: cols,
@@ -166,4 +156,74 @@ func WritePNG(path string, samples []float32, sampleRate float64, opt Options) (
 	}
 	renamed = true
 	return nil
+}
+
+// rasterBlit transposes the analysis output, which is column-major, into the
+// canvas, which is row-major.
+type rasterBlit struct {
+	dst, src         []uint8
+	cols, rows       int
+	rasterX, rasterY int
+	colsTotal        int
+}
+
+// blitTile is the side of the transpose that is walked in tiles. Walking the
+// source naively streams one column against a destination stride of colsTotal,
+// which evicts the destination from cache once per column at larger sizes;
+// tiling keeps both sides resident.
+const blitTile = 64
+
+// run performs the transpose, spread over up to workers goroutines.
+//
+// The split is by column tile, so each worker writes a disjoint span of every
+// row it touches and the shared destination needs no synchronisation. It is
+// worth parallelising at all because the analysis on either side of it already
+// is: left serial, moving a couple of megabytes through a strided read is a
+// quarter of the wall time of a large render.
+func (b rasterBlit) run(workers int) {
+	tiles := (b.cols + blitTile - 1) / blitTile
+	workers = min(max(workers, 1), tiles)
+	if workers <= 1 {
+		b.tiles(0, tiles)
+		return
+	}
+	var wg sync.WaitGroup
+	per := (tiles + workers - 1) / workers
+	for w := range workers {
+		from, to := w*per, min((w+1)*per, tiles)
+		if from >= to {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b.tiles(from, to)
+		}()
+	}
+	wg.Wait()
+}
+
+// tiles transposes the column tiles in [fromTile, toTile).
+func (b rasterBlit) tiles(fromTile, toTile int) {
+	for t := fromTile; t < toTile; t++ {
+		colBase := t * blitTile
+		colEnd := min(colBase+blitTile, b.cols)
+		for rowBase := 0; rowBase < b.rows; rowBase += blitTile {
+			rowEnd := min(rowBase+blitTile, b.rows)
+			// row-then-col inside the tile so the destination is written
+			// sequentially; the strided source reads stay resident for a tile.
+			for row := rowBase; row < rowEnd; row++ {
+				// Slice to exactly the tile's span so the WRITE is bounds-check
+				// free; ranging over it is what proves dst[i] in range. The
+				// strided source read still carries one check per pixel, which
+				// Go has no way to express away.
+				start := (b.rasterY+row)*b.colsTotal + b.rasterX + colBase
+				dst := b.dst[start : start+colEnd-colBase]
+				col := b.src[colBase*b.rows+row:]
+				for i := range dst {
+					dst[i] = col[i*b.rows]
+				}
+			}
+		}
+	}
 }

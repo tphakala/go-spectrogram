@@ -107,3 +107,47 @@ func requireSox(t *testing.T) {
 		t.Skip("sox binary not found; skipping oracle test")
 	}
 }
+
+// colourIndexRef is the original three-case form of colourIndexAt, kept as the
+// oracle for the branchless version that replaced it. The two must agree on
+// every input, including the boundaries and NaN.
+func colourIndexRef(x float64, sp int, dbRange float64) int {
+	if math.IsNaN(x) {
+		return fixedPalette
+	}
+	var c int
+	switch {
+	case x < -dbRange:
+		c = 0
+	case x >= 0:
+		c = sp - 1
+	default:
+		c = int(1 + (1+x/dbRange)*float64(sp-2))
+	}
+	return fixedPalette + c
+}
+
+func TestColourIndexAtMatchesReference(t *testing.T) {
+	for _, sp := range []int{3, 17, 169, 251} {
+		for _, dbRange := range []float64{20, 65, 120, 180} {
+			// Sweep well past both ends, with a step chosen not to divide the
+			// range evenly, so quantisation boundaries are hit off-grid as well
+			// as on it.
+			for x := -1.5 * dbRange; x <= 0.5*dbRange; x += dbRange / 997 {
+				if got, want := colourIndexAt(x, sp, dbRange), colourIndexRef(x, sp, dbRange); got != want {
+					t.Fatalf("colourIndexAt(%g, %d, %g) = %d, reference %d", x, sp, dbRange, got, want)
+				}
+			}
+			// The exact boundaries and the non-finite inputs, which the sweep
+			// above reaches only by luck.
+			for _, x := range []float64{
+				-dbRange, -dbRange - 1e-15, 0, -0.0, 1e-300, -1e-300,
+				math.NaN(), math.Inf(1), math.Inf(-1),
+			} {
+				if got, want := colourIndexAt(x, sp, dbRange), colourIndexRef(x, sp, dbRange); got != want {
+					t.Fatalf("colourIndexAt(%g, %d, %g) = %d, reference %d", x, sp, dbRange, got, want)
+				}
+			}
+		}
+	}
+}

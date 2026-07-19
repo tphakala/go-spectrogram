@@ -17,3 +17,4 @@ go.work.sum
 # Tooling state and local planning docs (never commit)
 .serena/
 docs/superpowers/
+.codegraph/

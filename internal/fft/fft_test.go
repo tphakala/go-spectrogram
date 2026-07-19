@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/cmplx"
+	"sync"
 	"testing"
 
 	"github.com/tphakala/simd/f64"
@@ -446,4 +447,103 @@ func FuzzPowerInto(f *testing.F) {
 			}
 		}
 	})
+}
+
+// TestCloneMatchesOriginal pins Clone's contract: a clone shares the parent's
+// twiddle tables but carries its own scratch, so it must produce bit-identical
+// output. Bit-identical rather than approximately equal, because the renderer's
+// parity with the sox binary is exact and a clone is what every worker beyond
+// the first one uses.
+func TestCloneMatchesOriginal(t *testing.T) {
+	for nfft := 4; nfft <= 2048; nfft <<= 1 {
+		p, err := NewPlan(nfft)
+		if err != nil {
+			t.Fatalf("nfft %d: %v", nfft, err)
+		}
+		sig := make([]float64, nfft)
+		win := make([]float64, nfft)
+		for i := range sig {
+			sig[i] = math.Sin(2*math.Pi*3*float64(i)/float64(nfft)) + 0.25*math.Cos(float64(i))
+			win[i] = 0.5 - 0.5*math.Cos(2*math.Pi*float64(i)/float64(nfft-1))
+		}
+		want := make([]float64, p.NumBins())
+		p.PowerInto(want, sig, win)
+
+		c := p.Clone()
+		got := make([]float64, c.NumBins())
+		c.PowerInto(got, sig, win)
+
+		if c.NFFT() != p.NFFT() || c.NumBins() != p.NumBins() {
+			t.Fatalf("nfft %d: clone reports size %d/%d, original %d/%d",
+				nfft, c.NFFT(), c.NumBins(), p.NFFT(), p.NumBins())
+		}
+		for k := range want {
+			if got[k] != want[k] {
+				t.Fatalf("nfft %d bin %d: clone %v, original %v (must be bit-identical)",
+					nfft, k, got[k], want[k])
+			}
+		}
+		// Interleaving the two plans must not disturb either. This is a
+		// weaker check than it looks: PowerInto repacks the whole scratch on
+		// every call, so a clone that wrongly SHARED the scratch would still
+		// pass here. Sequential use cannot distinguish the two; only
+		// concurrent use can, which is what TestCloneIsRaceFree covers.
+		again := make([]float64, p.NumBins())
+		p.PowerInto(again, sig, win)
+		for k := range want {
+			if again[k] != want[k] {
+				t.Fatalf("nfft %d bin %d: original returned %v on a repeat run, first run gave %v",
+					nfft, k, again[k], want[k])
+			}
+		}
+	}
+}
+
+// TestCloneIsRaceFree runs a plan and several clones concurrently over the same
+// read-only inputs. It exists to be run under -race: sharing the twiddle tables
+// is the whole point of Clone, and a table that turned out to be written during
+// a transform would be a data race in every parallel render.
+func TestCloneIsRaceFree(t *testing.T) {
+	const nfft = 512
+	p, err := NewPlan(nfft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := make([]float64, nfft)
+	win := make([]float64, nfft)
+	for i := range sig {
+		sig[i] = math.Sin(float64(i))
+		win[i] = 1
+	}
+	want := make([]float64, p.NumBins())
+	p.PowerInto(want, sig, win)
+
+	plans := []*Plan{p}
+	for range 7 {
+		plans = append(plans, p.Clone())
+	}
+	var wg sync.WaitGroup
+	errs := make([]bool, len(plans))
+	for i, pl := range plans {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dst := make([]float64, pl.NumBins())
+			for range 50 {
+				pl.PowerInto(dst, sig, win)
+				for k := range want {
+					if dst[k] != want[k] {
+						errs[i] = true
+						return
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	for i, bad := range errs {
+		if bad {
+			t.Errorf("plan %d produced a different spectrum when run concurrently", i)
+		}
+	}
 }
