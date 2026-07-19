@@ -113,6 +113,14 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 // would cost more than the encode on slow storage, and it buys durability
 // across a power cut rather than atomicity, which is not a guarantee the sox
 // binary offers either.
+//
+// Windows note: os.Rename replaces an existing destination (Go passes
+// MOVEFILE_REPLACE_EXISTING), so repeated writes to the same path work. It can
+// however fail with a sharing violation if another process holds the
+// destination open without FILE_SHARE_DELETE, where the previous truncate in
+// place would have succeeded. That trade is deliberate: a reader that had the
+// old file open keeps reading a complete image rather than watching one be
+// overwritten underneath it.
 func WritePNG(path string, samples []float32, sampleRate float64, opt Options) (err error) {
 	img, err := Render(samples, sampleRate, opt)
 	if err != nil {
@@ -145,9 +153,11 @@ func WritePNG(path string, samples []float32, sampleRate float64, opt Options) (
 	if err = f.Close(); err != nil {
 		return err
 	}
-	// os.CreateTemp creates with 0600, but callers expect the 0666&^umask that
-	// os.Create used to give them. A spectrogram served by another user or
-	// container is a normal deployment, and 0600 silently breaks it.
+	// os.CreateTemp creates with 0600, which would silently break the common
+	// deployment where another user or container serves the file. os.Create
+	// gave 0666&^umask; this does not reproduce that exactly, it guarantees
+	// group and world readability and owner write, which is what consumers
+	// actually depend on.
 	if err = os.Chmod(tmp, 0o644); err != nil {
 		return err
 	}
