@@ -178,3 +178,70 @@ func sizeName(n int) string {
 	}
 	return "nfft?"
 }
+
+// TestPowerIntoWritesEveryBin guards the paired unravel: bins are emitted two
+// at a time with DC, Nyquist and the self-paired middle bin special-cased, so a
+// bin could be skipped without any value comparison noticing. Pre-filling with
+// NaN makes an unwritten bin impossible to miss.
+func TestPowerIntoWritesEveryBin(t *testing.T) {
+	for nfft := 4; nfft <= 4096; nfft <<= 1 {
+		p, err := NewPlan(nfft)
+		if err != nil {
+			t.Fatalf("NewPlan(%d): %v", nfft, err)
+		}
+		dst := make([]float64, p.NumBins())
+		for i := range dst {
+			dst[i] = math.NaN()
+		}
+		p.PowerInto(dst, testSignal(nfft), hann(nfft))
+		for k, v := range dst {
+			if math.IsNaN(v) {
+				t.Errorf("nfft=%d: bin %d was never written", nfft, k)
+			}
+		}
+	}
+}
+
+// TestPowerIntoAllSizes runs the reference comparison across every power of two
+// the plan supports in the useful range, so both radix decompositions
+// ([4,4,...] when log2(half) is even, [2,4,4,...] when odd) are covered at many
+// stage counts rather than only at the four sizes sox happens to use.
+func TestPowerIntoAllSizes(t *testing.T) {
+	for nfft := 4; nfft <= 4096; nfft <<= 1 {
+		sig := testSignal(nfft)
+		win := hann(nfft)
+		want := referencePower(t, nfft, sig, win)
+
+		p, err := NewPlan(nfft)
+		if err != nil {
+			t.Fatalf("NewPlan(%d): %v", nfft, err)
+		}
+		got := make([]float64, p.NumBins())
+		p.PowerInto(got, sig, win)
+
+		peak := 0.0
+		for _, v := range want {
+			peak = math.Max(peak, v)
+		}
+		for k := range want {
+			if diff := math.Abs(got[k] - want[k]); diff > 1e-12*peak {
+				t.Fatalf("nfft=%d bin %d: got %g, want %g (diff %g)",
+					nfft, k, got[k], want[k], diff)
+			}
+		}
+	}
+}
+
+// TestPowerIntoAllocFree keeps the transform off the heap: it runs once per
+// block for every column of every render.
+func TestPowerIntoAllocFree(t *testing.T) {
+	p, err := NewPlan(1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, win := testSignal(1024), hann(1024)
+	dst := make([]float64, p.NumBins())
+	if n := testing.AllocsPerRun(100, func() { p.PowerInto(dst, sig, win) }); n != 0 {
+		t.Errorf("PowerInto allocates %v times per call, want 0", n)
+	}
+}

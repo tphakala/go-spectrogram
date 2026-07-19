@@ -21,57 +21,45 @@ returns an in-memory `*image.Paletted`, whereas the binary also deflate-encodes
 the PNG and writes it out, which is several ms on its own. The SoX timing
 includes process spawn, since that is part of what invoking it costs.
 
+amd64 (i7-1260P), best of 12, pinned to P-cores:
+
 | size        | dft  | `Render` | `WritePNG` | SoX 14.4.2 |
 |-------------|------|----------|------------|------------|
-| 258 x 129   | 256  | 5.5 ms   | **6.5 ms** | 6 ms       |
-| 514 x 257   | 512  | 6.2 ms   | **8.0 ms** | 8 ms       |
-| 1026 x 513  | 1024 | 10.0 ms  | **13.8 ms**| 16 ms      |
-| 2050 x 1025 | 2048 | 40.4 ms  | **45.5 ms**| 61 ms      |
-
-So end to end it is roughly a wash at the two small sizes and about 1.2-1.3x
-faster at the two large ones. The bigger practical win is not the milliseconds:
-it is losing the subprocess, and with it the spawn cost, the OOM-killer
-exposure on small machines, the pipe plumbing, and the `sox` path configuration.
+| 258 x 129   | 256  | 2.7 ms   | **4.0 ms** | 5 ms       |
+| 514 x 257   | 512  | 3.9 ms   | **5.7 ms** | 6 ms       |
+| 1026 x 513  | 1024 | 6.8 ms   | **9.3 ms** | 13 ms      |
+| 2050 x 1025 | 2048 | 28.0 ms  | **34.8 ms**| 51 ms      |
 
 `WritePNG` uses the stdlib encoder at its default compression, which is about
-3.4 ms of the 13.8 ms at 1026 x 513. A caller that would rather trade file size
+2.5 ms of the 9.3 ms at 1026 x 513. A caller that would rather trade file size
 for latency can use `Render` and encode itself: `png.BestSpeed` cuts that to
 1.5 ms at the cost of roughly 9 KiB -> 14 KiB per image.
 
-### On arm64 the binary is still ahead
+### arm64
 
 The same comparison on a Raspberry Pi 5 (Cortex-A76, Debian 13, Go 1.26.1),
-where SoX wins at every size:
+the deployment target that matters most here:
 
 | size        | `WritePNG` | SoX 14.4.2 |
 |-------------|------------|------------|
-| 258 x 129   | 13.6 ms    | **9 ms**   |
-| 514 x 257   | 18.8 ms    | **14 ms**  |
-| 1026 x 513  | 34.8 ms    | **30 ms**  |
-| 2050 x 1025 | 137.8 ms   | **112 ms** |
+| 258 x 129   | 9.5 ms     | **9 ms**   |
+| 514 x 257   | 14.3 ms    | **14 ms**  |
+| 1026 x 513  | **28.3 ms**| 30 ms      |
+| 2050 x 1025 | **109.6 ms**| 112 ms    |
 
-Output is still bit-exact there: the parity suite reports 100.000% on arm64
-too, so simd's NEON `Log10` kernel does not perturb a single palette index.
+Output is bit-exact there too: the parity suite reports 100.000% on arm64, so
+simd's NEON `Log10` kernel does not perturb a single palette index.
 
-The gap is the transform. On the Pi, `f64.STFTPlan` accounts for ~61% of a
-render (`fftHalf` 41%, `unravelBin` 15%, `packFrame` 4%), and none of it
-reaches a SIMD kernel. `unravelBin` alone costs 15% on arm64 against 6% on
-amd64. Closing this needs simd
-[#192](https://github.com/tphakala/simd/issues/192); there is no fix available
-from this side of the API.
+arm64 is the harder target. Before the transform was vendored, SoX won by
+1.2-1.5x at every size here; it is now a wash at the small sizes and a small
+win at the large ones. `internal/fft` is the reason, and further gains need
+simd [#192](https://github.com/tphakala/simd/issues/192) to vectorize the
+butterfly.
 
-Note that choosing float32 over float64 would not help: measured on the Pi the
-two are within 0.4% at every transform size, which is itself the proof that the
-butterfly never reaches a vector unit. float64 is therefore free, and it is what
-buys the exact parity, so it is the right default until #192 lands.
-
-Every rendered pixel matches the binary exactly: the parity tests report
-**100.000% exact, worst delta 0** across palette modes, dynamic ranges, gains,
-overlap settings, and the drain/truncation edge cases, chrome included.
-
-Most of the remaining time is the DFT: `f64.STFTPlan`'s butterfly is still
-scalar Go, which is 50% of a default render. simd
-[#192](https://github.com/tphakala/simd/issues/192) tracks vectorizing it.
+Choosing float32 over float64 would not help: measured on the Pi the two are
+within 0.4% at every transform size, which is itself the proof that the
+butterfly never reaches a vector unit. float64 is free, and it is what buys the
+exact parity, so it is the right default.
 
 ### `mel`: realtime bat preprocessing
 
@@ -108,8 +96,13 @@ types over shared DSP primitives:
   tick labels, dBFS legend, title/comment, SoX's embedded bitmap font) by
   default, bare raster via `Raw: true` (`sox ... -r`). Mono input,
   power-of-2 DFT, all SoX palette modes.
-- `internal/dsp/` - radix-2 FFT still used by `mel`, plus shared helpers. `sox`
-  now uses simd's `f64.STFTPlan` instead.
+- `internal/fft/` - vendored radix-4 real-input transform used by `sox`. It
+  replaces simd's `f64.STFTPlan`, whose butterfly is scalar radix-2 and
+  dominated the profile; see simd
+  [#192](https://github.com/tphakala/simd/issues/192). Deliberately minimal
+  (one frame, no framing or padding modes) so it can collapse back into a call
+  into simd once that lands.
+- `internal/dsp/` - radix-2 FFT still used by `mel`, plus shared helpers.
 - `cmd/bench` - realtime-factor demo for the mel generator.
 
 ### sox usage
