@@ -62,11 +62,13 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 		colEnd := min(colBase+tile, cols)
 		for rowBase := 0; rowBase < rows; rowBase += tile {
 			rowEnd := min(rowBase+tile, rows)
-			for col := colBase; col < colEnd; col++ {
-				src := a.dBfs[col*rows : (col+1)*rows]
-				for row := rowBase; row < rowEnd; row++ {
-					v := float64(src[row]) + autogain
-					cv.pix[(rasterY+row)*colsTotal+rasterX+col] = uint8(colourIndexAt(v, sp, dbRange))
+			// row-then-col inside the tile so the destination is written
+			// sequentially; the strided source reads stay in L1 for a 64x64 tile.
+			for row := rowBase; row < rowEnd; row++ {
+				dst := cv.pix[(rasterY+row)*colsTotal+rasterX:]
+				for col := colBase; col < colEnd; col++ {
+					v := float64(a.dBfs[col*rows+row]) + autogain
+					dst[col] = uint8(colourIndexAt(v, sp, dbRange))
 				}
 			}
 		}
