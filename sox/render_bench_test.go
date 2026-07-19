@@ -2,6 +2,7 @@ package sox
 
 import (
 	"math"
+	"path/filepath"
 	"testing"
 )
 
@@ -89,6 +90,30 @@ func BenchmarkAnalyzer(b *testing.B) {
 					b.Fatal(err)
 				}
 				a.run(sig)
+			}
+		})
+	}
+}
+
+// BenchmarkWritePNG is the apples-to-apples comparison against the SoX binary:
+// Render alone produces an in-memory image, whereas invoking `sox` also pays
+// for deflate-encoding the PNG and writing it out.
+func BenchmarkWritePNG(b *testing.B) {
+	sig := benchSignal(benchSeconds*benchRate, benchRate)
+	dir := b.TempDir()
+	for _, p := range benchPresets {
+		b.Run(p.name, func(b *testing.B) {
+			opt := Options{XSize: p.xSize, YSize: p.ySize}
+			out := filepath.Join(dir, p.name+".png")
+			if err := WritePNG(out, sig, benchRate, opt); err != nil {
+				b.Fatalf("write: %v", err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if err := WritePNG(out, sig, benchRate, opt); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}

@@ -14,16 +14,24 @@ SoX-compatible image renderer (`sox`), over a shared DSP core.
 ### `sox`: faster than the SoX binary, and bit-exact against it
 
 Rendering a 15 s mono clip at 24 kHz, at the four sizes a typical consumer
-asks for, against `sox <in> -n spectrogram -x W -y H -d 15 -z 100` (the binary
-timing includes process spawn, which is part of what calling it actually
-costs):
+asks for, against `sox <in> -n spectrogram -x W -y H -d 15 -z 100`.
 
-| size            | dft  | go-spectrogram | SoX 14.4.2 |
-|-----------------|------|----------------|------------|
-| 258 x 129       | 256  | **5.5 ms**     | 6 ms       |
-| 514 x 257       | 512  | **6.2 ms**     | 8 ms       |
-| 1026 x 513      | 1024 | **10.0 ms**    | 16 ms      |
-| 2050 x 1025     | 2048 | **40.4 ms**    | 61 ms      |
+Compare the `WritePNG` column against SoX, not the `Render` column: `Render`
+returns an in-memory `*image.Paletted`, whereas the binary also deflate-encodes
+the PNG and writes it out, which is several ms on its own. The SoX timing
+includes process spawn, since that is part of what invoking it costs.
+
+| size        | dft  | `Render` | `WritePNG` | SoX 14.4.2 |
+|-------------|------|----------|------------|------------|
+| 258 x 129   | 256  | 5.5 ms   | **6.5 ms** | 6 ms       |
+| 514 x 257   | 512  | 6.2 ms   | **8.0 ms** | 8 ms       |
+| 1026 x 513  | 1024 | 10.0 ms  | **13.8 ms**| 16 ms      |
+| 2050 x 1025 | 2048 | 40.4 ms  | **45.5 ms**| 61 ms      |
+
+So end to end it is roughly a wash at the two small sizes and about 1.2-1.3x
+faster at the two large ones. The bigger practical win is not the milliseconds:
+it is losing the subprocess, and with it the spawn cost, the OOM-killer
+exposure on small machines, the pipe plumbing, and the `sox` path configuration.
 
 Every rendered pixel matches the binary exactly: the parity tests report
 **100.000% exact, worst delta 0** across palette modes, dynamic ranges, gains,
