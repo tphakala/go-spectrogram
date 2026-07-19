@@ -50,10 +50,14 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 
 	// Draw in SoX's bottom-up coordinates, then blit flipped.
 	cv := &canvas{pix: make([]uint8, colsTotal*rowsTotal), cols: colsTotal}
+	// Resolve the palette constants once: they are fixed for the whole raster,
+	// and this loop runs once per pixel.
+	sp, dbRange := spectrumPoints(o), float64(o.DBRange)
 	for col := 0; col < cols; col++ {
-		for row := 0; row < rows; row++ {
-			v := float64(a.dBfs[col*rows+row]) + autogain
-			cv.set(rasterX+col, rasterY+row, uint8(colourIndex(o, v)))
+		src := a.dBfs[col*rows : (col+1)*rows]
+		for row, d := range src {
+			v := float64(d) + autogain
+			cv.pix[(rasterY+row)*colsTotal+rasterX+col] = uint8(colourIndexAt(v, sp, dbRange))
 		}
 	}
 	if !o.Raw {

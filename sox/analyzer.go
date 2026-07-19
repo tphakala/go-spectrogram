@@ -1,8 +1,6 @@
 package sox
 
 import (
-	"math"
-
 	"github.com/tphakala/simd/f64"
 )
 
@@ -21,6 +19,7 @@ type analyzer struct {
 	plan *f64.STFTPlan
 	buf  []float64 // len dftSize
 	pow  []float64 // per-block power spectrum scratch, len rows
+	db   []float64 // per-column dB scratch, len rows
 	mag  []float64 // len rows
 
 	read      int
@@ -49,6 +48,7 @@ func newAnalyzer(dftSize, rows, stepSize, blockSteps int, blockNorm float64, gai
 		plan: plan,
 		buf:  make([]float64, dftSize),
 		pow:  make([]float64, rows),
+		db:   make([]float64, rows),
 		mag:  make([]float64, rows),
 		// Columns are bounded by xSize; pre-size dBfs to avoid repeated grow/copy
 		// in doColumn (cap only, length stays 0 and grows by append).
@@ -124,16 +124,21 @@ func (a *analyzer) doColumn() {
 		return
 	}
 	a.cols++
-	for i := 0; i < a.rows; i++ {
-		dBfs := 10 * math.Log10(a.mag[i]*a.blockNorm)
-		a.dBfs = append(a.dBfs, float32(dBfs+float64(a.gain)))
+	// dBfs = 10*log10(mag*blockNorm), vectorized over the whole column: the
+	// scalar form calls math.Log10 once per cell, which is over half a million
+	// calls for a default-sized image.
+	f64.Scale(a.db, a.mag, a.blockNorm)
+	f64.Log10(a.db, a.db)
+	f64.Scale(a.db, a.db, 10)
+
+	gain := float64(a.gain)
+	for _, dBfs := range a.db {
+		a.dBfs = append(a.dBfs, float32(dBfs+gain))
 		if dBfs > a.max {
 			a.max = dBfs
 		}
 	}
-	for i := range a.mag {
-		a.mag[i] = 0
-	}
+	clear(a.mag)
 	a.blockNum = 0
 }
 

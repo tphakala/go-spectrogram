@@ -19,22 +19,28 @@ func spectrumPoints(o Options) int {
 
 // colourIndex ports spectrogram.c:576-581. x is a dBFS value.
 func colourIndex(o Options, x float64) int {
+	return colourIndexAt(x, spectrumPoints(o), float64(o.DBRange))
+}
+
+// colourIndexAt is colourIndex with the two Options-derived constants already
+// resolved. The raster loop calls this once per pixel (over half a million
+// times for the default size), where passing Options by value and recomputing
+// spectrumPoints per call is pure overhead: both are fixed for a whole image.
+func colourIndexAt(x float64, sp int, dbRange float64) int {
 	// NaN dBFS (e.g. from NaN input samples) compares false against every case
 	// below and would fall through to int(NaN), which is implementation-defined
 	// in Go. Map it to the floor colour instead.
 	if math.IsNaN(x) {
 		return fixedPalette
 	}
-	sp := spectrumPoints(o)
-	dbr := float64(o.DBRange)
 	var c int
 	switch {
-	case x < -dbr:
+	case x < -dbRange:
 		c = 0
 	case x >= 0:
 		c = sp - 1
 	default:
-		c = int(1 + (1+x/dbr)*float64(sp-2))
+		c = int(1 + (1+x/dbRange)*float64(sp-2))
 	}
 	return fixedPalette + c
 }
