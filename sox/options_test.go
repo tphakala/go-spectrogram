@@ -76,3 +76,25 @@ func TestNormalizeCommentDefault(t *testing.T) {
 		t.Errorf("Comment = %q, want %q", got, "hi")
 	}
 }
+
+// TestValidateRejectsNegativeWorkers pins that a negative worker count is an
+// error rather than a silent alias for the 0-selects-GOMAXPROCS default, which
+// is how a caller's arithmetic slip would otherwise disappear.
+func TestValidateRejectsNegativeWorkers(t *testing.T) {
+	if err := validate(normalize(Options{Workers: -1})); err == nil {
+		t.Fatal("expected an error for Workers -1, got nil")
+	}
+	for _, w := range []int{0, 1, 4} {
+		if err := validate(normalize(Options{Workers: w})); err != nil {
+			t.Errorf("Workers %d should be accepted, got %v", w, err)
+		}
+	}
+}
+
+// TestRenderRejectsNegativeWorkers checks the guard is reachable through the
+// public entry point, not just the internal validator.
+func TestRenderRejectsNegativeWorkers(t *testing.T) {
+	if _, err := Render(make([]float32, 8000), 8000, Options{Workers: -2}); err == nil {
+		t.Fatal("expected Render to reject a negative Workers, got nil")
+	}
+}

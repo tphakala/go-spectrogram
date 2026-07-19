@@ -7,6 +7,7 @@ package sox
 
 import (
 	"fmt"
+	"runtime"
 
 	"github.com/tphakala/go-spectrogram/internal/dsp"
 )
@@ -49,6 +50,18 @@ type Options struct {
 	LightBackground bool // SoX -l
 	Perm            int  // SoX -p, 1..6; 0 => 1
 	Quantisation    int  // SoX -q, 1..249; 0 => 249
+
+	// Workers caps the goroutines the analysis is spread over. It has no SoX
+	// equivalent: the columns of a spectrogram are independent once SoX's
+	// streaming state machine has said what each is made of, and the transform
+	// is most of the work, so rendering them in parallel is close to linear in
+	// cores. 0 means GOMAXPROCS, 1 renders on the calling goroutine. The image
+	// is identical either way; only latency changes.
+	//
+	// Set it to 1 when many spectrograms are already being rendered
+	// concurrently, where the default oversubscribes the machine and costs
+	// throughput to win latency that nobody is waiting on.
+	Workers int
 
 	Raw     bool   // SoX -r: render only the spectrogram raster, no axes/legend/text
 	Title   string // SoX -t: title centred at the top (adds 20 rows); "" means no title (sox -t "" is inexpressible)
@@ -131,6 +144,12 @@ func validate(o Options) error {
 	if o.Quantisation < 1 || o.Quantisation > 249 {
 		return fmt.Errorf("sox: Quantisation %d out of range 1..249", o.Quantisation)
 	}
+	// Rejected rather than clamped: 0 already means "pick for me", so silently
+	// treating a negative as 0 would make a typo or an arithmetic slip in the
+	// caller's worker count indistinguishable from asking for the default.
+	if o.Workers < 0 {
+		return fmt.Errorf("sox: Workers %d must not be negative (0 selects GOMAXPROCS)", o.Workers)
+	}
 	return nil
 }
 
@@ -139,4 +158,15 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// resolveWorkers maps Options.Workers onto a concrete goroutine count. The
+// callers cap it against the work available, so there is no size below which
+// this needs to opt out: even the smallest preset SoX consumers ask for is
+// nearly twice as fast on four cores.
+func resolveWorkers(want int) int {
+	if want > 0 {
+		return want
+	}
+	return runtime.GOMAXPROCS(0)
 }

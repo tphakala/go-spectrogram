@@ -80,25 +80,24 @@ func BenchmarkAnalyzer(b *testing.B) {
 			dft, rows := deriveDFTSize(o)
 			duration := float64(len(sig)) / benchRate
 			xSize, pps := resolveTimeAxis(o, duration)
+			actual := makeWindow(newWindowState(dft, o.Window), 0)
+			step, blocks, norm := stepSizing(actual, dft, benchRate, pps, o.SlackOverlap)
+			opts := analyzerOpts{
+				dftSize: dft, rows: rows,
+				stepSize: step, blockSteps: blocks, blockNorm: norm,
+				gain: -o.Gain, dBRange: o.DBRange,
+				spectrumPoints: spectrumPoints(o),
+				xSize:          xSize,
+				normalize:      o.Normalize,
+				window:         o.Window,
+				workers:        1,
+			}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				// a.run mutates ws.window through makeWindow, so the window
-				// state cannot be shared across iterations. Build it with the
-				// timer stopped: newAnalyzer also builds an fft.Plan, whose
-				// twiddle tables cost ~2*half Sincos calls, and timing that
-				// would measure plan construction rather than the DSP.
-				b.StopTimer()
-				ws := newWindowState(dft, o.Window)
-				actual := makeWindow(ws, 0)
-				step, blocks, norm := stepSizing(actual, dft, benchRate, pps, o.SlackOverlap)
-				a, err := newAnalyzer(dft, rows, step, blocks, norm, -o.Gain, o.DBRange, ws, xSize)
-				if err != nil {
+				if _, err := analyze(opts, sig); err != nil {
 					b.Fatal(err)
 				}
-				b.StartTimer()
-
-				a.run(sig)
 			}
 		})
 	}
@@ -125,6 +124,27 @@ func BenchmarkWritePNG(b *testing.B) {
 			b.ResetTimer()
 			for b.Loop() {
 				if err := WritePNG(out, sig, benchRate, opt); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkRenderSerial is BenchmarkRender pinned to one goroutine, so the
+// per-core cost can be tracked separately from what parallelism buys.
+func BenchmarkRenderSerial(b *testing.B) {
+	sig := benchSignal(benchSeconds*benchRate, benchRate)
+	for _, p := range benchPresets {
+		b.Run(p.name, func(b *testing.B) {
+			opt := Options{XSize: p.xSize, YSize: p.ySize, Workers: 1}
+			if _, err := Render(sig, benchRate, opt); err != nil {
+				b.Fatalf("render: %v", err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, err := Render(sig, benchRate, opt); err != nil {
 					b.Fatal(err)
 				}
 			}

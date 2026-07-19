@@ -8,10 +8,10 @@ written to answer "can the spectrogram run in realtime in Go" with a hard
 in-language number and to scope what `simd` needs. It now supports multiple
 spectrogram types: the original mel-tensor generator (`mel`) and a
 SoX-compatible image renderer (`sox`). The two no longer share a transform:
-`sox` runs the vendored real-input radix-4 FFT in `internal/fft`, `mel` is
+`sox` runs the vendored real-input mixed-radix FFT in `internal/fft`, `mel` is
 still on the full-size complex FFT in `internal/dsp`.
 
-## Current results (i7-1260P, AVX2+FMA)
+## Current results
 
 ### `sox`: faster than the SoX binary, and bit-exact against it
 
@@ -23,45 +23,54 @@ returns an in-memory `*image.Paletted`, whereas the binary also deflate-encodes
 the PNG and writes it out, which is several ms on its own. The SoX timing
 includes process spawn, since that is part of what invoking it costs.
 
-amd64 (i7-1260P), best of 12, pinned to P-cores:
+`Render` uses every core by default (see `Options.Workers`); the `1 core`
+column is the same call with `Workers: 1`, so the two together separate what
+the per-core work costs from what parallelism buys.
 
-| size        | dft  | `Render` | `WritePNG` | SoX 14.4.2 |
-|-------------|------|----------|------------|------------|
-| 258 x 129   | 256  | 2.7 ms   | **4.0 ms** | 5 ms       |
-| 514 x 257   | 512  | 3.9 ms   | **5.7 ms** | 6 ms       |
-| 1026 x 513  | 1024 | 6.8 ms   | **9.3 ms** | 13 ms      |
-| 2050 x 1025 | 2048 | 28.0 ms  | **34.8 ms**| 51 ms      |
+amd64 (i7-1260P, AVX2+FMA), idle host, `performance` governor, 4 P-cores,
+best of 6:
 
-`WritePNG` uses the stdlib encoder at its default compression, which is about
-2.5 ms of the 9.3 ms at 1026 x 513. A caller that would rather trade file size
-for latency can use `Render` and encode itself: `png.BestSpeed` cuts that to
-1.5 ms at the cost of roughly 9 KiB -> 14 KiB per image.
+| size        | dft  | `Render` | `Render` 1 core | `WritePNG` | SoX 14.4.2 |
+|-------------|------|----------|-----------------|------------|------------|
+| 258 x 129   | 256  | 0.8 ms   | 2.1 ms          | **1.9 ms** | 5.4 ms     |
+| 514 x 257   | 512  | 1.0 ms   | 2.4 ms          | **2.6 ms** | 7.0 ms     |
+| 1026 x 513  | 1024 | 1.7 ms   | 4.5 ms          | **4.4 ms** | 12.9 ms    |
+| 2050 x 1025 | 2048 | 5.6 ms   | 15.7 ms         | **12.3 ms**| 45.2 ms    |
 
-### arm64
+arm64 (Raspberry Pi 5, Cortex-A76 at a pinned 2.4 GHz, Debian 13, Go 1.26.1),
+the deployment target that matters most here, measured the same way:
 
-The same comparison on a Raspberry Pi 5 (Cortex-A76, Debian 13, Go 1.26.1),
-the deployment target that matters most here:
+| size        | `Render` | `Render` 1 core | `WritePNG` | SoX 14.4.2 |
+|-------------|----------|-----------------|------------|------------|
+| 258 x 129   | 2.1 ms   | 6.9 ms          | **4.1 ms** | 10.3 ms    |
+| 514 x 257   | 2.6 ms   | 8.4 ms          | **6.1 ms** | 14.6 ms    |
+| 1026 x 513  | 5.3 ms   | 16.9 ms         | **11.5 ms**| 30.6 ms    |
+| 2050 x 1025 | 18.7 ms  | 63.7 ms         | **36.1 ms**| 112.6 ms   |
 
-| size        | `WritePNG` | SoX 14.4.2 |
-|-------------|------------|------------|
-| 258 x 129   | 9.5 ms     | **9 ms**   |
-| 514 x 257   | 14.3 ms    | **14 ms**  |
-| 1026 x 513  | **28.3 ms**| 30 ms      |
-| 2050 x 1025 | **109.6 ms**| 112 ms    |
+So `WritePNG` is 2.7-3.7x the SoX binary on amd64 and 2.4-3.1x on arm64. arm64
+used to be the harder target, at a wash or worse; it no longer is, because the
+same three things pay off on both: the vectorized butterfly has a NEON path,
+the columns parallelise the same way, and the passes that were removed were
+removed everywhere.
 
-Parity holds identically here, including the `DBRange` 180 exception above,
-which produces the same 329 mismatches on both architectures. CI now proves that
-rather than taking it on trust: the test job runs on both `ubuntu-latest` and
-`ubuntu-24.04-arm`, so the NEON `Log10` kernel is held to exactly the same
-assertions as the AVX2 one. A further step re-runs the parity comparison with
-`SIMD_DISABLE=all`, since simd picks a vectorized or scalar kernel per host and
-the two do not agree to the last ulp.
+At the largest size `WritePNG` is now more than half PNG encoding: 12.3 ms
+against 5.6 ms for `Render`. That is the stdlib encoder at its default
+compression. A caller that would rather trade file size for latency can use
+`Render` and encode itself with `png.BestSpeed`.
 
-arm64 is the harder target. Before the transform was vendored, SoX won by
-1.2-1.5x at every size here; it is now a wash at the small sizes and a small
-win at the large ones. `internal/fft` is the reason, and further gains need
-simd [#192](https://github.com/tphakala/simd/issues/192) to vectorize the
-butterfly.
+None of this cost any parity. Against the `sox` binary on the same host, every
+case is 100.000% of pixels exact with worst delta 0, chrome and raster alike,
+on both architectures, with the AVX2 kernels on amd64 and the NEON ones on
+arm64. The one exception is unchanged and pre-dates all of this: at `DBRange`
+180, 329 of 410400 pixels land one palette index off, identically on both
+architectures. CI proves the rest rather than taking it on trust: the test job
+runs on both `ubuntu-latest` and `ubuntu-24.04-arm`, and a further step re-runs
+the comparison with `SIMD_DISABLE=all`, since simd picks a vectorized or scalar
+kernel per host and the two do not agree to the last ulp.
+
+That the vectorized butterfly changes nothing here is worth stating plainly: it
+associates the arithmetic differently from the scalar radix-4 loop it replaced,
+so it is not bit-identical to it, and the images still are.
 
 Choosing float32 over float64 would not help here: measured on the Pi, simd's
 f32 and f64 STFT plans came within 0.4% of each other at every transform size,
@@ -71,13 +80,36 @@ SoX's own double-precision `lsx_rdft`, so it is the right default. (This
 package has no float32 variant to select; the comparison was between simd's
 two plans.)
 
+### Where the time goes now
+
+Profiling one 2050 x 1025 render on a single core, after the work above:
+
+| | share |
+|---|---|
+| `unravelPower` (real-FFT recombination, scalar) | 15% |
+| butterflies (`f64.ButterflyComplex` + scalar radix-4) | 26% |
+| frame load, window and digit reversal | 11% |
+| palette quantisation | 10% |
+| `f64.Log10` | 10% |
+| raster transpose | 6% |
+
+The transform is still over half the work. The two things that would move it
+next both need simd kernels rather than anything in this repo, and are filed as
+simd [#198](https://github.com/tphakala/simd/issues/198): a stage-level
+butterfly (the current per-block API costs one call per block, so short spans
+are dominated by call overhead) and a real-FFT unpack that writes `|X_k|^2`
+directly. The latter is why `unravelPower` is still scalar: v1.6.0's
+`RealFFTUnpack` is correct and vectorized and still measured 13% slower here,
+because writing the complex spectrum and squaring it afterwards costs two more
+passes over the bins than emitting power in one.
+
 ### `mel`: realtime bat preprocessing
 
 - **8.9 ms** to compute the mel spectrogram for **1 second** of 384 kHz audio.
 - **~106x realtime**, **0.94%** of one core, **zero allocations** in the hot path.
 - Still on `internal/dsp`'s full-size complex FFT, so it pays roughly twice the
-  transform that `sox` now does. Moving it onto a real-input transform is the
-  obvious next speedup here.
+  transform that `sox` now does, and none of the `sox` work above. Moving it
+  onto `internal/fft` is the obvious next speedup here.
 
 ```
 go test ./...                              # correctness, plus SoX parity when sox is installed
@@ -88,14 +120,16 @@ go test -run XXX -fuzz FuzzPowerInto ./internal/fft/   # transform invariants
 
 The parity tests need the `sox` binary on PATH and skip without it. On a
 hybrid-core host (Intel P/E), pin the benchmarks or the numbers are noise: an
-unpinned run on the i7-1260P above swung by up to 69% between repeats.
+unpinned run on the i7-1260P above swung by up to 69% between repeats. Pin the
+CPU governor too; on a busy laptop the same benchmark varied by more than the
+changes being measured.
 
 ```
 taskset -c 0,2,4,6 env GOMAXPROCS=4 go test -bench=. -run=XXX -count=10 ./sox/
 ```
 
 The module depends on [`github.com/tphakala/simd`](https://github.com/tphakala/simd)
-(pinned to `v1.5.0` in `go.mod`), so a fresh clone builds and tests with the
+(pinned to `v1.6.0` in `go.mod`), so a fresh clone builds and tests with the
 standard `go build ./...` / `go test ./...`, no local checkout or `replace`
 needed. To co-develop against a local `simd` working copy, add a temporary
 `replace github.com/tphakala/simd => ../simd` to `go.mod` (do not commit it).
@@ -116,13 +150,16 @@ types over shared DSP primitives:
   tick labels, dBFS legend, title/comment, SoX's embedded bitmap font) by
   default, bare raster via `Raw: true` (`sox ... -r`). Mono input,
   power-of-2 DFT, all SoX palette modes.
-- `internal/fft/` - vendored radix-4 real-input transform used by `sox`. The
-  transform dominates the render, and neither alternative was fast enough:
-  `internal/dsp` runs a full-size complex FFT over real input, and simd's
-  `f64.STFTPlan` halves that but leaves the butterfly scalar. simd
-  [#192](https://github.com/tphakala/simd/issues/192) tracks the f64 kernels
-  that would make this package unnecessary. Deliberately minimal (one frame, no
-  framing or padding modes) so it can collapse back into a simd call.
+- `internal/fft/` - vendored real-input transform used by `sox`. The transform
+  dominates the render, and neither alternative was fast enough: `internal/dsp`
+  runs a full-size complex FFT over real input, and simd's `f64.STFTPlan`
+  halves that but leaves the butterfly scalar. It runs a scalar radix-4
+  butterfly at the small spans and simd's vectorized `f64.ButterflyComplex`
+  (added for [#192](https://github.com/tphakala/simd/issues/192)) from span 8
+  up, which is where the kernel's per-call overhead stops mattering.
+  Deliberately minimal (one frame, no framing or padding modes) so it can
+  collapse back into a simd call once
+  [#198](https://github.com/tphakala/simd/issues/198) lands.
 - `internal/dsp/` - radix-2 FFT still used by `mel`, plus shared helpers.
 - `cmd/bench` - realtime-factor demo for the mel generator.
 
@@ -143,6 +180,8 @@ img, err = sox.Render(samples, 44100, sox.Options{Title: "My clip"}) // with tit
   128 mels, 9-150 kHz). Generalizing those and adding a plain linear/STFT
   spectrogram is the obvious next step. (`sox` is fully parameterised via
   `Options`; this bullet is about `mel` only.)
+- `mel` has had none of the `sox` optimisation work: no parallelism, no
+  real-input transform, no fused quantisation.
 - Framing is `center=false` (streaming-friendly). librosa's default
   `center=true` adds n_fft/2 padding; matching it bit-for-bit is a follow-up, as
   is a golden-file parity test against a librosa reference.

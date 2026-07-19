@@ -27,22 +27,32 @@ func colourIndex(o Options, x float64) int {
 // times for the default size), where passing Options by value and recomputing
 // spectrumPoints per call is pure overhead: both are fixed for a whole image.
 func colourIndexAt(x float64, sp int, dbRange float64) int {
-	// NaN dBFS (e.g. from NaN input samples) compares false against every case
-	// below and would fall through to int(NaN), which is implementation-defined
-	// in Go. Map it to the floor colour instead.
-	if math.IsNaN(x) {
+	// Below the floor is kept as its own branch, not folded into the clamp
+	// below, because it is the one case that can skip the divide. Quiet content
+	// puts most of the image there (three quarters of the cells for a clean
+	// tone), the branch predicts near-perfectly either way, and a divide is the
+	// most expensive thing in this function.
+	if x < -dbRange {
 		return fixedPalette
 	}
-	var c int
-	switch {
-	case x < -dbRange:
+	// The remaining two SoX cases collapse into one expression plus a clamp.
+	// That is worth doing because this runs once per pixel and the boundary
+	// between them tracks the image content, so as a branch it is the
+	// unpredictable one: at or above 0 dBFS the expression is already at least
+	// sp-1, so clamping gives the same answer, exactly (x == 0 lands on sp-1).
+	//
+	// NaN dBFS (e.g. from NaN input samples) reaches here, since NaN compares
+	// false against the floor test, and would otherwise fall through to
+	// int(NaN), which is implementation-defined in Go. It fails the `> 0` test,
+	// so spelling the low clamp that way rather than as `< 0` maps it to the
+	// floor colour.
+	c := 1 + (1+x/dbRange)*float64(sp-2)
+	if !(c > 0) {
 		c = 0
-	case x >= 0:
-		c = sp - 1
-	default:
-		c = int(1 + (1+x/dbRange)*float64(sp-2))
+	} else if hi := float64(sp - 1); c > hi {
+		c = hi
 	}
-	return fixedPalette + c
+	return fixedPalette + int(c)
 }
 
 // makePalette ports spectrogram.c:583-663. Returns a palette of length exactly
