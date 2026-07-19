@@ -132,8 +132,10 @@ func WritePNG(path string, samples []float32, sampleRate float64, opt Options) (
 		// Keyed on renamed, not on err: a panic in the encoder would leave err
 		// nil and strand the temporary file otherwise.
 		if !renamed {
-			f.Close()
-			os.Remove(tmp)
+			// Best-effort cleanup on the failure path; the caller already has
+			// the error that got us here, so these add nothing.
+			_ = f.Close()
+			_ = os.Remove(tmp)
 		}
 	}()
 

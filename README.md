@@ -47,12 +47,13 @@ the deployment target that matters most here:
 | 1026 x 513  | **28.3 ms**| 30 ms      |
 | 2050 x 1025 | **109.6 ms**| 112 ms    |
 
-Output is bit-exact there too, and CI now proves it rather than taking it on
-trust: the test job runs on both `ubuntu-latest` and `ubuntu-24.04-arm`, so the
-NEON `Log10` kernel is held to the same bit-exact assertion as the AVX2 one. A
-further step re-runs the parity comparison with `SIMD_DISABLE=all`, since simd
-picks a vectorized or scalar kernel per host and the two do not agree to the
-last ulp.
+Parity holds identically here, including the `DBRange` 180 exception above,
+which produces the same 329 mismatches on both architectures. CI now proves that
+rather than taking it on trust: the test job runs on both `ubuntu-latest` and
+`ubuntu-24.04-arm`, so the NEON `Log10` kernel is held to exactly the same
+assertions as the AVX2 one. A further step re-runs the parity comparison with
+`SIMD_DISABLE=all`, since simd picks a vectorized or scalar kernel per host and
+the two do not agree to the last ulp.
 
 arm64 is the harder target. Before the transform was vendored, SoX won by
 1.2-1.5x at every size here; it is now a wash at the small sizes and a small
