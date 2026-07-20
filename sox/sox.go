@@ -3,49 +3,99 @@ package sox
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
 	"sync"
 )
 
-// Render computes the SoX-compatible spectrogram image for mono `samples` at
-// `sampleRate`. By default it produces the full SoX PNG layout: raster plus
-// axes, tick labels, dBFS legend, footer comment, and optional title,
-// equivalent to `sox <in> -n spectrogram`. With opt.Raw it renders only the
-// raster (`sox ... spectrogram -r`), oriented like SoX: low frequency at the
-// bottom row, time left-to-right.
-func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted, error) {
-	if !(sampleRate > 0) { // also rejects NaN
-		return nil, fmt.Errorf("sox: sampleRate must be positive, got %g", sampleRate)
-	}
+// Renderer renders repeatedly at one fixed Options, holding on to every buffer
+// a render needs instead of rebuilding them per call. A consumer producing many
+// images at a single preset, which is the usual way this package is used, pays
+// the allocations once rather than about 2.7 MB across ~580 allocations per
+// image, along with the transform plan's ~1000 sincos calls.
+//
+// It is strictly an optimisation: for any given clip it produces exactly the
+// image the free Render produces, and Render is implemented on top of it.
+//
+// Two things are traded for that. The returned image's Pix array is reused, so
+// it is overwritten by the next call on the same Renderer; a caller that needs
+// to keep an image must copy it or use WritePNG, which encodes before returning.
+// And a Renderer is stateful, so it must not be used from more than one
+// goroutine at a time. Render itself stays safe for concurrent use, since it
+// builds its own. Callers wanting both reuse and concurrency should keep a
+// sync.Pool of Renderers, one in flight per goroutine.
+//
+// The buffers are grow-only, sized by the longest clip rendered so far. Drop
+// the Renderer to release them.
+type Renderer struct {
+	o    Options // normalized and validated
+	dft  int
+	rows int
+
+	// Fixed by Options, so computed once: the palette every returned image
+	// shares, the number of goroutines to fan out over, and the raw sum of the
+	// full-length window, which is what sizes the hop.
+	pal            color.Palette
+	workers        int
+	spectrumPoints int
+	windowSum      float64
+
+	scratch analysisScratch
+	cv      canvas
+	pix     []uint8
+}
+
+// NewRenderer validates opt once and prepares the buffers for it. It returns
+// the same errors Render would for the same Options, just at construction
+// rather than on the first clip.
+func NewRenderer(opt Options) (*Renderer, error) {
 	o := normalize(opt)
 	if err := validate(o); err != nil {
 		return nil, err
 	}
-
 	dft, rows := deriveDFTSize(o)
+	return &Renderer{
+		o: o, dft: dft, rows: rows,
+		pal:            makePalette(o),
+		workers:        resolveWorkers(o.Workers),
+		spectrumPoints: spectrumPoints(o),
+		// The full-length window is only needed for its sum; each analysis
+		// goroutine reshapes its own copy from there.
+		windowSum: makeWindow(newWindowState(dft, o.Window), 0),
+	}, nil
+}
+
+// Render computes the spectrogram image for mono `samples` at `sampleRate`,
+// reusing the buffers from the previous call.
+//
+// The returned image aliases those buffers: its Pix contents are overwritten by
+// the next Render on this Renderer. The header itself is fresh each call, so an
+// image held from an earlier call keeps its own Rect and Stride. Its Palette is
+// shared by every image this Renderer returns and must not be modified, which
+// is a fair reading of an image's palette in any case.
+func (r *Renderer) Render(samples []float32, sampleRate float64) (*image.Paletted, error) {
+	if !(sampleRate > 0) { // also rejects NaN
+		return nil, fmt.Errorf("sox: sampleRate must be positive, got %g", sampleRate)
+	}
+	o := r.o
 	duration := float64(len(samples)) / sampleRate
 	xSize, pps := resolveTimeAxis(o, duration)
-
-	workers := resolveWorkers(o.Workers)
-	// The full-length window is only needed for its sum, which sizes the hop;
-	// each analysis goroutine reshapes its own copy from there.
-	actual := makeWindow(newWindowState(dft, o.Window), 0)
-	step, blocks, norm := stepSizing(actual, dft, sampleRate, pps, o.SlackOverlap)
+	step, blocks, norm := stepSizing(r.windowSum, r.dft, sampleRate, pps, o.SlackOverlap)
 
 	a, err := analyze(analyzerOpts{
-		dftSize: dft, rows: rows,
+		dftSize: r.dft, rows: r.rows,
 		stepSize: step, blockSteps: blocks, blockNorm: norm,
 		gain: -o.Gain, dBRange: o.DBRange,
-		spectrumPoints: spectrumPoints(o),
+		spectrumPoints: r.spectrumPoints,
 		xSize:          xSize,
 		normalize:      o.Normalize,
 		window:         o.Window,
-		workers:        workers,
-	}, samples)
+		workers:        r.workers,
+	}, samples, &r.scratch)
 	if err != nil {
-		return nil, fmt.Errorf("sox: analyzing at DFT size %d: %w", dft, err)
+		return nil, fmt.Errorf("sox: analyzing at DFT size %d: %w", r.dft, err)
 	}
 	cols := a.cols
 
@@ -55,24 +105,33 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 		a.quantise(autogain)
 	}
 
-	colsTotal, rowsTotal := cols, rows
+	colsTotal, rowsTotal := cols, r.rows
 	rasterX, rasterY := 0, 0
 	if !o.Raw {
-		colsTotal, rowsTotal = chromeDims(cols, rows, o.Title)
+		colsTotal, rowsTotal = chromeDims(cols, r.rows, o.Title)
 		rasterX, rasterY = left, below
 	}
 
 	// Draw in SoX's bottom-up coordinates, then blit flipped.
-	cv := &canvas{pix: make([]uint8, colsTotal*rowsTotal), cols: colsTotal}
-	rasterBlit{
-		dst: cv.pix, src: a.idx,
-		cols: cols, rows: rows,
-		rasterX: rasterX, rasterY: rasterY, colsTotal: colsTotal,
-	}.run(workers)
+	n := colsTotal * rowsTotal
+	r.cv.pix, r.cv.cols = growU8(r.cv.pix, n), colsTotal
 	if !o.Raw {
-		drawChrome(cv, chromeParams{
+		// Chrome paints only its text, ticks and border, and takes the rest of
+		// the canvas already being the background colour (palette index 0). On a
+		// reused buffer that has to be made true again, or the previous image's
+		// chrome ghosts through. With Raw the blit below covers every byte, so
+		// the clear is skipped rather than merely being unnecessary.
+		clear(r.cv.pix)
+	}
+	rasterBlit{
+		dst: r.cv.pix, src: a.idx,
+		cols: cols, rows: r.rows,
+		rasterX: rasterX, rasterY: rasterY, colsTotal: colsTotal,
+	}.run(r.workers)
+	if !o.Raw {
+		drawChrome(&r.cv, chromeParams{
 			rasterCols: cols,
-			rasterRows: rows,
+			rasterRows: r.rows,
 			colsTotal:  colsTotal,
 			rowsTotal:  rowsTotal,
 			secs:       float64(cols) * float64(step) * float64(blocks) / sampleRate,
@@ -82,13 +141,42 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 		})
 	}
 
-	pal := makePalette(o)
-	img := image.NewPaletted(image.Rect(0, 0, colsTotal, rowsTotal), pal)
+	r.pix = growU8(r.pix, n)
+	img := &image.Paletted{
+		Pix:     r.pix,
+		Stride:  colsTotal,
+		Rect:    image.Rect(0, 0, colsTotal, rowsTotal),
+		Palette: r.pal,
+	}
 	for y := 0; y < rowsTotal; y++ {
 		copy(img.Pix[y*img.Stride:y*img.Stride+colsTotal],
-			cv.pix[(rowsTotal-1-y)*colsTotal:(rowsTotal-y)*colsTotal])
+			r.cv.pix[(rowsTotal-1-y)*colsTotal:(rowsTotal-y)*colsTotal])
 	}
 	return img, nil
+}
+
+// Render computes the SoX-compatible spectrogram image for mono `samples` at
+// `sampleRate`. By default it produces the full SoX PNG layout: raster plus
+// axes, tick labels, dBFS legend, footer comment, and optional title,
+// equivalent to `sox <in> -n spectrogram`. With opt.Raw it renders only the
+// raster (`sox ... spectrogram -r`), oriented like SoX: low frequency at the
+// bottom row, time left-to-right.
+//
+// Every call allocates its own buffers, which makes it safe for concurrent use
+// and the right choice for one-off renders. To render many images at the same
+// Options, see NewRenderer.
+func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted, error) {
+	// Checked before the Options are validated, so that the error a caller sees
+	// for a bad sample rate does not depend on whether the Options are also
+	// wrong. NewRenderer validates in the other order.
+	if !(sampleRate > 0) { // also rejects NaN
+		return nil, fmt.Errorf("sox: sampleRate must be positive, got %g", sampleRate)
+	}
+	r, err := NewRenderer(opt)
+	if err != nil {
+		return nil, err
+	}
+	return r.Render(samples, sampleRate)
 }
 
 // WritePNG renders and encodes to path with the stdlib PNG encoder.
@@ -111,12 +199,28 @@ func Render(samples []float32, sampleRate float64, opt Options) (*image.Paletted
 // place would have succeeded. That trade is deliberate: a reader that had the
 // old file open keeps reading a complete image rather than watching one be
 // overwritten underneath it.
-func WritePNG(path string, samples []float32, sampleRate float64, opt Options) (err error) {
+func WritePNG(path string, samples []float32, sampleRate float64, opt Options) error {
 	img, err := Render(samples, sampleRate, opt)
 	if err != nil {
 		return err
 	}
+	return encodePNG(path, img)
+}
 
+// WritePNG renders and encodes to path exactly as the package-level WritePNG
+// does, reusing this Renderer's buffers. The image never escapes, so the reuse
+// is invisible to the caller and this is the safest way to use a Renderer.
+func (r *Renderer) WritePNG(path string, samples []float32, sampleRate float64) error {
+	img, err := r.Render(samples, sampleRate)
+	if err != nil {
+		return err
+	}
+	return encodePNG(path, img)
+}
+
+// encodePNG is the write half of WritePNG; see its doc comment for why the
+// write goes via a temporary file.
+func encodePNG(path string, img *image.Paletted) (err error) {
 	// Same directory as the destination, so the rename cannot cross a
 	// filesystem boundary. A unique name keeps concurrent writers of the same
 	// destination from sharing a temporary.

@@ -31,7 +31,7 @@ func TestAnalyzerToneConcentratesEnergy(t *testing.T) {
 		normalize: true,
 		window:    opt.Window,
 		workers:   1,
-	}, sig)
+	}, sig, &analysisScratch{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestAnalyzerColumnCountMatchesGeometry(t *testing.T) {
 		normalize:      true,
 		window:         opt.Window,
 		workers:        1,
-	}, sig)
+	}, sig, &analysisScratch{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,10 +96,10 @@ func TestAnalyzeRejectsBinMismatch(t *testing.T) {
 	}
 	bad, good := base, base
 	bad.rows, good.rows = 512, 513
-	if _, err := analyze(bad, nil); err == nil {
+	if _, err := analyze(bad, nil, &analysisScratch{}); err == nil {
 		t.Fatal("expected an error when rows != dftSize/2+1, got nil")
 	}
-	if _, err := analyze(good, nil); err != nil {
+	if _, err := analyze(good, nil, &analysisScratch{}); err != nil {
 		t.Fatalf("expected the correct bin count to be accepted, got %v", err)
 	}
 }

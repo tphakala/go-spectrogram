@@ -69,6 +69,44 @@ type analysis struct {
 	max  float64
 }
 
+// analysisScratch is everything the analysis allocates that a Renderer can
+// hand back on the next call: the output buffers, the schedule, the transform
+// plan and the per-worker DSP state.
+//
+// The buffers are grow-only. Their sizes track the column count, which varies
+// with clip duration, so a Renderer fed one long clip and then many short ones
+// holds the long clip's footprint until it is dropped. That is the trade a
+// reuse API exists to make, and the alternative (shrinking, or sizing to
+// Options.XSize up front) either reintroduces the allocation or pessimises the
+// common fixed-preset case.
+type analysisScratch struct {
+	a       analysis
+	idx     []uint8
+	dBfs    []float32
+	blocks  []blockPlan
+	columns []columnPlan
+	crs     []*columnRenderer
+	plan    *fft.Plan
+}
+
+// growU8 returns a slice of exactly n bytes, reusing b's array when it already
+// has the capacity. The contents are not cleared: every caller here writes all
+// n bytes before reading any, and the one place that does not (the canvas,
+// which chrome only partly paints) clears explicitly.
+func growU8(b []uint8, n int) []uint8 {
+	if cap(b) < n {
+		return make([]uint8, n)
+	}
+	return b[:n]
+}
+
+func growF32(b []float32, n int) []float32 {
+	if cap(b) < n {
+		return make([]float32, n)
+	}
+	return b[:n]
+}
+
 // analyze renders every column of the spectrogram for samples.
 //
 // It runs in two phases. The first walks SoX's streaming state machine to
@@ -80,13 +118,19 @@ type analysis struct {
 // by running that state machine rather than by re-deriving closed forms for it,
 // which is how a parallel port drifts from the original. What comes out is a
 // plan whose columns are independent and can be computed in any order.
-func analyze(o analyzerOpts, samples []float32) (*analysis, error) {
-	// dftSize is a power of two by construction (validate() rejects YSize values
-	// that do not yield one), so this only fails on a programming error.
-	plan, err := fft.NewPlan(o.dftSize)
-	if err != nil {
-		return nil, err
+func analyze(o analyzerOpts, samples []float32, s *analysisScratch) (*analysis, error) {
+	if s.plan == nil {
+		// dftSize is a power of two by construction (validate() rejects YSize
+		// values that do not yield one), so this only fails on a programming
+		// error. It is built once per scratch: dftSize derives from Options
+		// alone, which a Renderer fixes for its lifetime.
+		plan, err := fft.NewPlan(o.dftSize)
+		if err != nil {
+			return nil, err
+		}
+		s.plan = plan
 	}
+	plan := s.plan
 	// deriveDFTSize always returns rows == dftSize/2+1, which is exactly the
 	// plan's bin count. Assert it anyway: rows sizes every per-column buffer
 	// here, and the simd reductions in finishColumn silently process only
@@ -97,23 +141,49 @@ func analyze(o analyzerOpts, samples []float32) (*analysis, error) {
 			o.rows, plan.NumBins(), o.dftSize)
 	}
 
-	blocks, columns := schedule(o, len(samples))
-	a := &analysis{opts: o, cols: len(columns), max: -float64(o.dBRange)}
+	// [:0] rather than fresh slices: schedule appends, so reusing them unsliced
+	// would append this clip's schedule after the previous one's.
+	s.blocks, s.columns = schedule(o, len(samples), s.blocks[:0], s.columns[:0])
+	blocks, columns := s.blocks, s.columns
+
+	// Assigning the whole struct is what resets it, max included: a maximum
+	// carried over from a louder clip would render this one dark under -n.
+	a := &s.a
+	*a = analysis{opts: o, cols: len(columns), max: -float64(o.dBRange)}
 	n := a.cols * o.rows
+	// idx is sized on both paths. The -n path fills it in quantise rather than
+	// in emit, but it is the same buffer and the same layout either way.
+	s.idx = growU8(s.idx, n)
+	a.idx = s.idx
 	if o.normalize {
-		a.dBfs = make([]float32, n)
-	} else {
-		a.idx = make([]uint8, n)
+		s.dBfs = growF32(s.dBfs, n)
+		a.dBfs = s.dBfs
 	}
 	if a.cols == 0 {
 		return a, nil
 	}
 
 	workers := min(max(o.workers, 1), a.cols)
+	// Grown to the largest worker count seen, never clamped down: a Renderer
+	// whose first clip was short enough to need one worker must still fan out
+	// on the next one.
+	for len(s.crs) < workers {
+		// The first worker takes the plan itself; the rest clone it, sharing its
+		// twiddle tables and allocating only their own scratch.
+		p := plan
+		if len(s.crs) > 0 {
+			p = plan.Clone()
+		}
+		s.crs = append(s.crs, newColumnRenderer(o, p))
+	}
+	rs := s.crs[:workers]
+	for _, r := range rs {
+		r.reset(a)
+	}
+
 	if workers == 1 {
-		r := a.newRenderer(plan)
-		r.run(samples, blocks, columns, 0, a.cols)
-		a.max = r.max
+		rs[0].run(samples, blocks, columns, 0, a.cols)
+		a.max = rs[0].max
 		return a, nil
 	}
 
@@ -121,22 +191,13 @@ func analyze(o analyzerOpts, samples []float32) (*analysis, error) {
 	// there is nothing for a work queue to balance. Ranges are contiguous
 	// because a renderer slides its frame buffer and reshapes its window only
 	// when `end` changes, both of which are only cheap along a run of columns.
-	rs := make([]*columnRenderer, workers)
 	per := (a.cols + workers - 1) / workers
 	var wg sync.WaitGroup
-	for w := range workers {
+	for w, r := range rs {
 		from, to := w*per, min((w+1)*per, a.cols)
 		if from >= to {
 			break
 		}
-		// The first worker takes the plan just built; the rest clone it, sharing
-		// its twiddle tables and allocating only their own scratch.
-		p := plan
-		if w > 0 {
-			p = plan.Clone()
-		}
-		r := a.newRenderer(p)
-		rs[w] = r
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -145,7 +206,7 @@ func analyze(o analyzerOpts, samples []float32) (*analysis, error) {
 	}
 	wg.Wait()
 	for _, r := range rs {
-		if r != nil && r.max > a.max {
+		if r.max > a.max {
 			a.max = r.max
 		}
 	}
@@ -171,11 +232,17 @@ type scheduler struct {
 	columns []columnPlan
 }
 
-func schedule(o analyzerOpts, nSamples int) (blocks []blockPlan, columns []columnPlan) {
+// schedule walks the state machine for nSamples, appending into blocks and
+// columns. They are passed in rather than allocated so a Renderer can hand back
+// the previous call's arrays; pass nil for a fresh schedule. The scheduler
+// itself is always a fresh value, which is what keeps its half-dozen scalar
+// state fields from needing an explicit reset.
+func schedule(o analyzerOpts, nSamples int, blocks []blockPlan, columns []columnPlan) ([]blockPlan, []columnPlan) {
 	s := &scheduler{
 		dftSize: o.dftSize, stepSize: o.stepSize,
 		blockSteps: o.blockSteps, xSize: o.xSize,
 		blockNorm: o.blockNorm,
+		blocks:    blocks, columns: columns,
 	}
 	s.end = o.dftSize                     // spectrogram.c:429
 	s.endMin = 0                          // zeroed in start
@@ -270,23 +337,46 @@ type columnRenderer struct {
 	max float64
 }
 
-func (a *analysis) newRenderer(plan *fft.Plan) *columnRenderer {
-	o := a.opts
-	r := &columnRenderer{
-		a:    a,
+// newColumnRenderer allocates the state whose size depends only on the DFT
+// geometry, which a Renderer fixes for its lifetime. Everything that varies per
+// image is set by reset, which the caller must run before the first use.
+func newColumnRenderer(o analyzerOpts, plan *fft.Plan) *columnRenderer {
+	return &columnRenderer{
 		plan: plan,
 		ws:   newWindowState(o.dftSize, o.window),
 		buf:  make([]float64, o.dftSize),
 		mag:  make([]float64, o.rows),
 		db:   make([]float64, o.rows),
-		max:  -float64(o.dBRange), // spectrogram.c:443
 	}
-	// Only a column spanning several DFTs needs somewhere to accumulate from;
-	// a single-DFT column transforms straight into mag.
-	if o.blockSteps != 1 {
+}
+
+// reset points a renderer at the image about to be computed and returns its
+// carried state to what a freshly built one has.
+//
+// Both fields matter, and both fail silently rather than loudly if missed.
+// Leaving primed set makes loadFrame believe the stream is continuous, so the
+// first frame of the new clip slides in over the previous clip's tail instead
+// of being read afresh, and it can skip the makeWindow call when the new `end`
+// happens to equal the stale one. max is the -n autogain reference, so a peak
+// left over from a louder clip renders this one dark.
+//
+// The remaining buffers need no clearing: loadFrame, PowerInto and Log10 each
+// overwrite the whole of the slice they write, and makeWindow rewrites the
+// window in full.
+func (r *columnRenderer) reset(a *analysis) {
+	o := a.opts
+	r.a = a
+	r.primed = false
+	r.frameStart = 0
+	r.lastEnd = 0
+	r.max = -float64(o.dBRange) // spectrogram.c:443
+	// Only a column spanning several DFTs needs somewhere to accumulate from; a
+	// single-DFT column transforms straight into mag. blockSteps depends on the
+	// clip's sample rate as well as on Options, so a renderer reused across
+	// rates can need the accumulator on a later call having not needed it here.
+	if o.blockSteps != 1 && r.pow == nil {
 		r.pow = make([]float64, o.rows)
 	}
-	return r
 }
 
 // run computes columns [from, to) into the analysis output.
@@ -407,7 +497,6 @@ func (r *columnRenderer) emit(c int, norm float64) {
 // produces, so the raster pass in Render has a single form to handle.
 func (a *analysis) quantise(autogain float64) {
 	n := a.cols * a.opts.rows
-	a.idx = make([]uint8, n)
 	dbRange := float64(a.opts.dBRange)
 	src := a.dBfs[:n]
 	dst := a.idx[:n]
