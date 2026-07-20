@@ -95,7 +95,7 @@ func BenchmarkAnalyzer(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				if _, err := analyze(opts, sig); err != nil {
+				if _, err := analyze(opts, sig, &analysisScratch{}); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -124,6 +124,67 @@ func BenchmarkWritePNG(b *testing.B) {
 			b.ResetTimer()
 			for b.Loop() {
 				if err := WritePNG(out, sig, benchRate, opt); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkReusedRenderer is BenchmarkRender through a Renderer kept across
+// calls, which is how a consumer rendering many clips at one preset uses this
+// package. Compare it against BenchmarkRender at the same size: the difference
+// is what rebuilding the buffers and the transform plan costs per image.
+//
+// The Renderer is warmed before the timer starts, so what is measured is the
+// steady state rather than the first call, which still allocates everything.
+func BenchmarkReusedRenderer(b *testing.B) {
+	sig := benchSignal(benchSeconds*benchRate, benchRate)
+	for _, p := range benchPresets {
+		for _, raw := range []bool{false, true} {
+			name := p.name
+			if raw {
+				name += "_raw"
+			}
+			b.Run(name, func(b *testing.B) {
+				r, err := NewRenderer(Options{XSize: p.xSize, YSize: p.ySize, Raw: raw})
+				if err != nil {
+					b.Fatalf("new renderer: %v", err)
+				}
+				if _, err := r.Render(sig, benchRate); err != nil {
+					b.Fatalf("render: %v", err)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for b.Loop() {
+					if _, err := r.Render(sig, benchRate); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkReusedRendererWritePNG is the batch-consumer path end to end, and
+// the one where reuse is unambiguously safe: the image never escapes.
+func BenchmarkReusedRendererWritePNG(b *testing.B) {
+	sig := benchSignal(benchSeconds*benchRate, benchRate)
+	dir := b.TempDir()
+	for _, p := range benchPresets {
+		b.Run(p.name, func(b *testing.B) {
+			r, err := NewRenderer(Options{XSize: p.xSize, YSize: p.ySize})
+			if err != nil {
+				b.Fatalf("new renderer: %v", err)
+			}
+			out := filepath.Join(dir, "reused_"+p.name+".png")
+			if err := r.WritePNG(out, sig, benchRate); err != nil {
+				b.Fatalf("write: %v", err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if err := r.WritePNG(out, sig, benchRate); err != nil {
 					b.Fatal(err)
 				}
 			}

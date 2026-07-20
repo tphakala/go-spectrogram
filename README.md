@@ -103,6 +103,46 @@ directly. The latter is why `unravelPower` is still scalar: v1.6.0's
 because writing the complex spectrum and squaring it afterwards costs two more
 passes over the bins than emitting power in one.
 
+### `sox`: rendering many clips at one preset
+
+`Render` allocates every buffer it needs on each call. A consumer producing many
+images at one preset, which is the usual way this package is used, can hold a
+`Renderer` instead, which keeps them:
+
+```go
+r, err := sox.NewRenderer(sox.Options{XSize: 1026, YSize: 513})
+for _, clip := range clips {
+    if err := r.WritePNG(clip.out, clip.samples, clip.rate); err != nil { ... }
+}
+```
+
+Same clip and sizes as above, `Render` against a warmed `Renderer`, medians of
+ten runs:
+
+| size        | amd64 `Render` | reused | arm64 `Render` | reused |
+|-------------|----------------|--------|----------------|--------|
+| 258 x 129   | 780.2 us | **681.4 us** | 2.223 ms | **1.856 ms** |
+| 514 x 257   | 919.1 us | **761.7 us** | 2.801 ms | **2.287 ms** |
+| 1026 x 513  | 1.697 ms | **1.517 ms** | 5.620 ms | **4.539 ms** |
+| 2050 x 1025 | 5.744 ms | **5.251 ms** | 19.70 ms | **17.75 ms** |
+
+So 9-19% off `Render`, and 1-10% off `WritePNG`, where the unchanged PNG encode
+dominates. The larger effect is on allocation: at 1026 x 513 a `Render` costs
+2.13 MiB across 447 allocations, a reused `Renderer` 1785 B across 97 (1088 B
+across 11 with `Raw`, which has no chrome text to format). Over 2000 renders at
+that size the collector ran 1703 times against 2, measured as the NumGC delta
+around exactly 2000 renders.
+
+What is left is the chrome tick labels, which go through `fmt`, and one closure
+per worker per pass. Neither is what the reuse is about, and together they are
+under half a percent of the render.
+
+The trade is that a `Renderer` is stateful. The image it returns aliases the
+buffer the next call reuses, so it has to be treated as invalid once `Render` is
+called again (`WritePNG` encodes before returning and never exposes this), and
+one `Renderer` belongs to one goroutine. `Render` itself is unchanged and stays
+safe for concurrent use.
+
 ### `mel`: realtime bat preprocessing
 
 - **8.9 ms** to compute the mel spectrogram for **1 second** of 384 kHz audio.
@@ -149,7 +189,10 @@ types over shared DSP primitives:
   `*image.Paletted` matching `sox <in> -n spectrogram`: full chrome (axes,
   tick labels, dBFS legend, title/comment, SoX's embedded bitmap font) by
   default, bare raster via `Raw: true` (`sox ... -r`). Mono input,
-  power-of-2 DFT, all SoX palette modes.
+  power-of-2 DFT, all SoX palette modes. `Render` and `WritePNG` allocate per
+  call and are safe for concurrent use; `NewRenderer` returns a stateful,
+  single-goroutine `Renderer` that reuses its buffers across clips at a fixed
+  `Options`.
 - `internal/fft/` - vendored real-input transform used by `sox`. The transform
   dominates the render, and neither alternative was fast enough: `internal/dsp`
   runs a full-size complex FFT over real input, and simd's `f64.STFTPlan`
@@ -172,6 +215,10 @@ import "github.com/tphakala/go-spectrogram/sox"
 err := sox.WritePNG("out.png", samples, 44100, sox.Options{})        // full SoX PNG
 img, err := sox.Render(samples, 44100, sox.Options{Raw: true})       // raster only
 img, err = sox.Render(samples, 44100, sox.Options{Title: "My clip"}) // with title
+
+// Many clips at one preset: reuse the buffers (see the reuse section above).
+r, err := sox.NewRenderer(sox.Options{XSize: 1026, YSize: 513})
+err = r.WritePNG("out.png", samples, 44100)
 ```
 
 ## Status / honesty (things to finish as this grows into a lib)
