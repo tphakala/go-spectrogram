@@ -3,6 +3,10 @@
 // By default it renders the full SoX PNG chrome (axes, tick labels, dBFS
 // legend, footer comment, optional title); Options.Raw gives the bare raster.
 // v1 is mono input, power-of-2 DFT.
+//
+// Render and WritePNG are the one-off entry points: they allocate per call and
+// are safe for concurrent use. To produce many images at one Options, see
+// NewRenderer, which keeps the buffers between clips.
 package sox
 
 import (

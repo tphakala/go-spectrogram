@@ -89,24 +89,6 @@ type analysisScratch struct {
 	plan    *fft.Plan
 }
 
-// growU8 returns a slice of exactly n bytes, reusing b's array when it already
-// has the capacity. The contents are not cleared: every caller here writes all
-// n bytes before reading any, and the one place that does not (the canvas,
-// which chrome only partly paints) clears explicitly.
-func growU8(b []uint8, n int) []uint8 {
-	if cap(b) < n {
-		return make([]uint8, n)
-	}
-	return b[:n]
-}
-
-func growF32(b []float32, n int) []float32 {
-	if cap(b) < n {
-		return make([]float32, n)
-	}
-	return b[:n]
-}
-
 // analyze renders every column of the spectrogram for samples.
 //
 // It runs in two phases. The first walks SoX's streaming state machine to
@@ -118,6 +100,13 @@ func growF32(b []float32, n int) []float32 {
 // by running that state machine rather than by re-deriving closed forms for it,
 // which is how a parallel port drifts from the original. What comes out is a
 // plan whose columns are independent and can be computed in any order.
+//
+// s carries the buffers, schedule, transform plan and per-worker state between
+// calls; pass a fresh &analysisScratch{} to allocate everything. One scratch is
+// only valid for one fixed set of analyzerOpts: dftSize and window are baked
+// into the plan and the per-worker window states, and analyze rejects a reuse
+// that changes either. The returned *analysis is owned by the scratch and its
+// idx/dBfs alias it, so it is invalidated by the next analyze on the same one.
 func analyze(o analyzerOpts, samples []float32, s *analysisScratch) (*analysis, error) {
 	if s.plan == nil {
 		// dftSize is a power of two by construction (validate() rejects YSize
@@ -135,10 +124,22 @@ func analyze(o analyzerOpts, samples []float32, s *analysisScratch) (*analysis, 
 	// plan's bin count. Assert it anyway: rows sizes every per-column buffer
 	// here, and the simd reductions in finishColumn silently process only
 	// min(len(dst), len(src)) elements, so a mismatch would quietly truncate
-	// each column rather than fail.
+	// each column rather than fail. On a reused scratch it does double duty, as
+	// the only thing standing between a cached plan and a different DFT size.
 	if o.rows != plan.NumBins() {
 		return nil, fmt.Errorf("sox: rows %d does not match DFT bin count %d for size %d",
 			o.rows, plan.NumBins(), o.dftSize)
+	}
+	// The window is the other thing a reused scratch bakes in: each worker's
+	// windowState is built once and reset never revisits it, so reusing a
+	// scratch under a different WindowType would render every later image with
+	// the first one's window. That is bit-inexact against SoX with nothing to
+	// show for it, which is the failure this package can least afford to make
+	// silent. A Renderer fixes Options for its lifetime so it cannot happen
+	// today; this is what keeps that true.
+	if len(s.crs) > 0 && s.crs[0].ws.winType != o.window {
+		return nil, fmt.Errorf("sox: analysis scratch built for window %d, reused with %d",
+			s.crs[0].ws.winType, o.window)
 	}
 
 	// [:0] rather than fresh slices: schedule appends, so reusing them unsliced
@@ -153,10 +154,10 @@ func analyze(o analyzerOpts, samples []float32, s *analysisScratch) (*analysis, 
 	n := a.cols * o.rows
 	// idx is sized on both paths. The -n path fills it in quantise rather than
 	// in emit, but it is the same buffer and the same layout either way.
-	s.idx = growU8(s.idx, n)
+	s.idx = grow(s.idx, n)
 	a.idx = s.idx
 	if o.normalize {
-		s.dBfs = growF32(s.dBfs, n)
+		s.dBfs = grow(s.dBfs, n)
 		a.dBfs = s.dBfs
 	}
 	if a.cols == 0 {
@@ -166,7 +167,11 @@ func analyze(o analyzerOpts, samples []float32, s *analysisScratch) (*analysis, 
 	workers := min(max(o.workers, 1), a.cols)
 	// Grown to the largest worker count seen, never clamped down: a Renderer
 	// whose first clip was short enough to need one worker must still fan out
-	// on the next one.
+	// on the next one. Sized in one step rather than letting append double from
+	// nil, which cost five allocations on every fresh scratch.
+	if cap(s.crs) < workers {
+		s.crs = append(make([]*columnRenderer, 0, workers), s.crs...)
+	}
 	for len(s.crs) < workers {
 		// The first worker takes the plan itself; the rest clone it, sharing its
 		// twiddle tables and allocating only their own scratch.
@@ -353,12 +358,18 @@ func newColumnRenderer(o analyzerOpts, plan *fft.Plan) *columnRenderer {
 // reset points a renderer at the image about to be computed and returns its
 // carried state to what a freshly built one has.
 //
-// Both fields matter, and both fail silently rather than loudly if missed.
-// Leaving primed set makes loadFrame believe the stream is continuous, so the
-// first frame of the new clip slides in over the previous clip's tail instead
-// of being read afresh, and it can skip the makeWindow call when the new `end`
-// happens to equal the stale one. max is the -n autogain reference, so a peak
-// left over from a louder clip renders this one dark.
+// Of the five assignments only two carry meaning, and both fail silently rather
+// than loudly if missed. Leaving primed set makes loadFrame believe the stream
+// is continuous, so the first frame of the new clip slides in over the previous
+// clip's tail instead of being read afresh, and it can skip the makeWindow call
+// when the new `end` happens to equal the stale one. max is the -n autogain
+// reference, so a peak left over from a louder clip renders this one dark.
+//
+// frameStart, lastEnd and a are defensive: the first two are only read behind
+// primed, which is cleared just above them, and a is the same pointer for a
+// scratch's whole life. Mutation testing confirms all three are dead stores, so
+// resist writing a test for them; they are here to keep the reset obviously
+// complete rather than subtly sufficient.
 //
 // The remaining buffers need no clearing: loadFrame, PowerInto and Log10 each
 // overwrite the whole of the slice they write, and makeWindow rewrites the
