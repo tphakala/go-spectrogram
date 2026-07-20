@@ -121,16 +121,17 @@ ten runs:
 
 | size        | amd64 `Render` | reused | arm64 `Render` | reused |
 |-------------|----------------|--------|----------------|--------|
-| 258 x 129   | 779.7 us | **678.0 us** | 2.250 ms | **1.849 ms** |
-| 514 x 257   | 923.7 us | **761.6 us** | 2.813 ms | **2.281 ms** |
-| 1026 x 513  | 1.716 ms | **1.528 ms** | 5.698 ms | **4.552 ms** |
-| 2050 x 1025 | 5.802 ms | **5.238 ms** | 20.16 ms | **18.21 ms** |
+| 258 x 129   | 780.2 us | **681.4 us** | 2.223 ms | **1.856 ms** |
+| 514 x 257   | 919.1 us | **761.7 us** | 2.801 ms | **2.287 ms** |
+| 1026 x 513  | 1.697 ms | **1.517 ms** | 5.620 ms | **4.539 ms** |
+| 2050 x 1025 | 5.744 ms | **5.251 ms** | 19.70 ms | **17.75 ms** |
 
-So 10-20% off `Render`, and 3-11% off `WritePNG`, where the unchanged PNG encode
+So 9-19% off `Render`, and 1-10% off `WritePNG`, where the unchanged PNG encode
 dominates. The larger effect is on allocation: at 1026 x 513 a `Render` costs
-2.13 MiB across 448 allocations, a reused `Renderer` 1785 B across 97 (1088 B
+2.13 MiB across 447 allocations, a reused `Renderer` 1785 B across 97 (1088 B
 across 11 with `Raw`, which has no chrome text to format). Over 2000 renders at
-that size the collector ran 1415 times against 26.
+that size, measured on the amd64 host above, the collector ran 3956 times
+against 434.
 
 What is left is the chrome tick labels, which go through `fmt`, and one closure
 per worker per pass. Neither is what the reuse is about, and together they are
