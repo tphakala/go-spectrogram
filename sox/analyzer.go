@@ -104,8 +104,9 @@ type analysisScratch struct {
 // s carries the buffers, schedule, transform plan and per-worker state between
 // calls; pass a fresh &analysisScratch{} to allocate everything. One scratch is
 // only valid for one fixed set of analyzerOpts: dftSize and window are baked
-// into the plan and the per-worker window states, and analyze rejects a reuse
-// that changes either. The returned *analysis is owned by the scratch and its
+// into the plan and the per-worker window states. analyze rejects a window
+// change directly, and catches a dftSize change indirectly, via the bin-count
+// check, because rows and dftSize always move together. The returned *analysis is owned by the scratch and its
 // idx/dBfs alias it, so it is invalidated by the next analyze on the same one.
 func analyze(o analyzerOpts, samples []float32, s *analysisScratch) (*analysis, error) {
 	if s.plan == nil {
@@ -365,11 +366,14 @@ func newColumnRenderer(o analyzerOpts, plan *fft.Plan) *columnRenderer {
 // when the new `end` happens to equal the stale one. max is the -n autogain
 // reference, so a peak left over from a louder clip renders this one dark.
 //
-// frameStart, lastEnd and a are defensive: the first two are only read behind
-// primed, which is cleared just above them, and a is the same pointer for a
-// scratch's whole life. Mutation testing confirms all three are dead stores, so
-// resist writing a test for them; they are here to keep the reset obviously
-// complete rather than subtly sufficient.
+// a is load-bearing and must not be removed: newColumnRenderer does not set it,
+// so the first reset of a newly appended renderer is what makes it non-nil, and
+// loadFrame dereferences it with no guard. It is only redundant on later resets.
+//
+// frameStart and lastEnd are the genuinely defensive pair: both are read only
+// behind primed, which is cleared just above them, so mutation testing shows
+// them surviving. They stay because they keep the reset obviously complete
+// rather than subtly sufficient, and cost two stores per image.
 //
 // The remaining buffers need no clearing: loadFrame, PowerInto and Log10 each
 // overwrite the whole of the slice they write, and makeWindow rewrites the

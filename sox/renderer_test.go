@@ -2,6 +2,10 @@ package sox
 
 import (
 	"image"
+	// Registered explicitly rather than relying on sox.go importing it, so that
+	// image.Decode in assertDecodesTo does not depend on a non-test file's
+	// import set.
+	_ "image/png"
 	"math"
 	"os"
 	"path/filepath"
@@ -25,9 +29,10 @@ import (
 //   - normalize_multiblock is the only case whose dBFS buffer has to GROW on a
 //     reused Renderer. With an explicit XSize the column count is that size for
 //     every clip, so it can only shrink; driving the time axis with
-//     PixelsPerSec instead makes it track duration (51 columns for the 1 s clip,
-//     121 for the 12 s one). Without this case, a grow helper that never grew a
-//     live buffer passed the whole package.
+//     PixelsPerSec instead makes it track duration (measured over this corpus:
+//     50, 50, 120, 10, 30, 20, 1, 0 columns, so the 12 s clip grows it twice).
+//     Without this case, a grow helper that never grew a live buffer passed the
+//     whole package.
 //   - few_cols pins the partial fan-out, where some workers get an empty range.
 //     Reachability of that branch otherwise depends on the machine: it needs
 //     more than about six workers, and both CI runners have four.
@@ -228,13 +233,17 @@ func TestRendererReturnsFreshHeader(t *testing.T) {
 		t.Fatalf("render a: %v", err)
 	}
 	rectA := a.Rect
-	if cap(a.Pix) != len(a.Pix) {
-		t.Errorf("Pix cap %d exceeds len %d; append would write into the Renderer",
-			cap(a.Pix), len(a.Pix))
-	}
 	b, err := r.Render(clips[3].samples, clips[3].rate)
 	if err != nil {
 		t.Fatalf("render b: %v", err)
+	}
+	// Checked on the SECOND, smaller render, which is the only place it can
+	// fail: the first render allocates exactly n, so its capacity equals its
+	// length whether or not the returned slice is capped. Only after a shrink
+	// does the buffer carry spare capacity for an append to escape into.
+	if cap(b.Pix) != len(b.Pix) {
+		t.Errorf("Pix cap %d exceeds len %d; a caller's append would write into "+
+			"the Renderer's live pixels", cap(b.Pix), len(b.Pix))
 	}
 	if a == b {
 		t.Fatal("Render returned the same *image.Paletted header twice")
@@ -381,35 +390,45 @@ func TestRenderErrorPrecedence(t *testing.T) {
 }
 
 // TestRenderConcurrent pins the claim that the free Render stays safe for
-// concurrent use now that it is built on a stateful type. Run under -race this
-// is the whole assertion; the image comparison catches a shared buffer that
-// happens not to trip the detector.
+// concurrent use now that it is built on a stateful type.
+//
+// Each goroutine renders a DIFFERENT clip, which is what makes the image
+// comparison able to fail: if the entry points ever came to share a buffer,
+// eight goroutines all rendering the same clip would write identical bytes over
+// each other and compare equal, leaving -race as the only detector. With
+// distinct clips a shared buffer produces a visibly wrong image as well.
 func TestRenderConcurrent(t *testing.T) {
 	t.Parallel()
-	clip := reuseClips()[0]
 	opt := Options{XSize: 258, YSize: 129}
-	want, err := Render(clip.samples, clip.rate, opt)
-	if err != nil {
-		t.Fatalf("reference: %v", err)
+	clips := reuseClips()[:5] // the five that render a non-empty image
+	want := make([]*image.Paletted, len(clips))
+	for i, c := range clips {
+		img, err := Render(c.samples, c.rate, opt)
+		if err != nil {
+			t.Fatalf("reference %s: %v", c.name, err)
+		}
+		want[i] = img
 	}
 
-	const goroutines = 8
-	got := make([]*image.Paletted, goroutines)
-	errs := make([]error, goroutines)
+	const perClip = 3
+	n := len(clips) * perClip
+	got := make([]*image.Paletted, n)
+	errs := make([]error, n)
 	var wg sync.WaitGroup
-	for i := range goroutines {
+	for i := range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got[i], errs[i] = Render(clip.samples, clip.rate, opt)
+			c := clips[i%len(clips)]
+			got[i], errs[i] = Render(c.samples, c.rate, opt)
 		}()
 	}
 	wg.Wait()
-	for i := range goroutines {
+	for i := range n {
 		if errs[i] != nil {
 			t.Fatalf("goroutine %d: %v", i, errs[i])
 		}
-		assertSameImage(t, "concurrent render", got[i], want)
+		assertSameImage(t, "concurrent "+clips[i%len(clips)].name, got[i], want[i%len(clips)])
 	}
 }
 

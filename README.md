@@ -130,8 +130,8 @@ So 9-19% off `Render`, and 1-10% off `WritePNG`, where the unchanged PNG encode
 dominates. The larger effect is on allocation: at 1026 x 513 a `Render` costs
 2.13 MiB across 447 allocations, a reused `Renderer` 1785 B across 97 (1088 B
 across 11 with `Raw`, which has no chrome text to format). Over 2000 renders at
-that size, measured on the amd64 host above, the collector ran 3956 times
-against 434.
+that size the collector ran 1703 times against 2, measured as the NumGC delta
+around exactly 2000 renders.
 
 What is left is the chrome tick labels, which go through `fmt`, and one closure
 per worker per pass. Neither is what the reuse is about, and together they are

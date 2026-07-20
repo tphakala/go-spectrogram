@@ -29,11 +29,11 @@ import (
 // one per worker goroutine, as with mel.Generator and fft.Plan. The free Render
 // stays safe for concurrent use.
 //
-// The buffers are grow-only, sized by the largest image rendered so far, so a
-// Renderer holds roughly two canvases plus the analysis output and the
-// per-worker state for its lifetime (a few megabytes at 1026x513, more with
-// Normalize, which adds a float32 buffer four times the size of the palette
-// indices). Drop the Renderer to release them.
+// The buffers are grow-only and grow geometrically, so a Renderer holds roughly
+// two canvases plus the analysis output and the per-worker state for its
+// lifetime, and up to twice that where a buffer last doubled (a few megabytes at
+// 1026x513, more with Normalize, which adds a float32 buffer four times the size
+// of the palette indices). Drop the Renderer to release them.
 type Renderer struct {
 	o    Options // normalized and validated
 	dft  int

@@ -103,3 +103,35 @@ func TestAnalyzeRejectsBinMismatch(t *testing.T) {
 		t.Fatalf("expected the correct bin count to be accepted, got %v", err)
 	}
 }
+
+// TestAnalyzeRejectsWindowChangeOnReusedScratch covers the other thing a reused
+// scratch bakes in. Each worker's window state is built once and reset never
+// revisits it, so reusing a scratch under a different WindowType would render
+// every later image with the first one's window: no error, no panic, just a
+// spectrogram that is quietly wrong. A Renderer fixes Options for its lifetime
+// so it cannot happen through the exported API, which is exactly why the guard
+// needs a test of its own rather than incidental coverage.
+func TestAnalyzeRejectsWindowChangeOnReusedScratch(t *testing.T) {
+	o := analyzerOpts{
+		dftSize: 256, rows: 129, stepSize: 64, blockSteps: 1, blockNorm: 1,
+		dBRange: 120, spectrumPoints: 251, xSize: 100, workers: 1,
+		window: WindowHann,
+	}
+	samples := make([]float32, 4096)
+	s := &analysisScratch{}
+	if _, err := analyze(o, samples, s); err != nil {
+		t.Fatalf("first analyze: %v", err)
+	}
+
+	changed := o
+	changed.window = WindowHamming
+	if _, err := analyze(changed, samples, s); err == nil {
+		t.Fatal("expected an error reusing a scratch under a different window, got nil")
+	}
+	// The rejection must leave the scratch usable, not half-updated: an error
+	// return here is a programming-error guard, and poisoning the scratch would
+	// turn it into a second failure somewhere else.
+	if _, err := analyze(o, samples, s); err != nil {
+		t.Fatalf("original window rejected after the guard fired: %v", err)
+	}
+}
